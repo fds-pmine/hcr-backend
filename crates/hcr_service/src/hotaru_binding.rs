@@ -41,26 +41,35 @@ use crate::binding::{HttpCall, Method, Router};
 /// Registered explicitly because hotaru has no usable catch-all pattern. The
 /// handler still hands the **full path** to [`Router`], so route parsing stays in
 /// one tested place rather than being split between two layers.
+///
+/// Parameters use hotaru's angle-bracket syntax (`<id>`), not braces — the
+/// `{id}` form in `QUICK_TUTORIAL.md` predates the current URL lexer, which
+/// emits `AngleStart` tokens. A brace pattern is treated as a literal segment
+/// and simply never matches.
+///
+/// The names are irrelevant here: the handler passes the full path to the router
+/// rather than reading captured parameters, so hotaru only has to decide *that*
+/// a request belongs to this service, not how to carve it up.
 pub const ROUTES: &[(&str, &str)] = &[
     ("/api/v1/challenges", "hcr.challenges.list"),
-    ("/api/v1/challenges/{id}", "hcr.challenges.get"),
-    ("/api/v1/challenges/{id}/{version}", "hcr.challenges.version"),
+    ("/api/v1/challenges/<id>", "hcr.challenges.get"),
+    ("/api/v1/challenges/<id>/<version>", "hcr.challenges.version"),
     ("/api/v1/score", "hcr.score"),
     ("/api/v1/submissions", "hcr.submissions.create"),
-    ("/api/v1/submissions/{id}", "hcr.submissions.get"),
+    ("/api/v1/submissions/<id>", "hcr.submissions.get"),
     ("/api/v1/sessions", "hcr.sessions.start"),
-    ("/api/v1/sessions/{id}", "hcr.sessions.get"),
-    ("/api/v1/sessions/{id}/next", "hcr.sessions.next"),
-    ("/api/v1/sessions/{id}/responses", "hcr.sessions.respond"),
-    ("/api/v1/sessions/{id}/finalize", "hcr.sessions.finalize"),
+    ("/api/v1/sessions/<id>", "hcr.sessions.get"),
+    ("/api/v1/sessions/<id>/next", "hcr.sessions.next"),
+    ("/api/v1/sessions/<id>/responses", "hcr.sessions.respond"),
+    ("/api/v1/sessions/<id>/finalize", "hcr.sessions.finalize"),
     ("/api/v1/time", "hcr.time"),
     ("/api/v1/matches", "hcr.matches.create"),
-    ("/api/v1/matches/{id}", "hcr.matches.get"),
-    ("/api/v1/matches/{id}/challenge", "hcr.matches.challenge"),
-    ("/api/v1/matches/{id}/results", "hcr.matches.results"),
-    ("/api/v1/matches/{id}/join", "hcr.matches.join"),
-    ("/api/v1/matches/{id}/start", "hcr.matches.start"),
-    ("/api/v1/matches/{id}/submissions", "hcr.matches.submit"),
+    ("/api/v1/matches/<id>", "hcr.matches.get"),
+    ("/api/v1/matches/<id>/challenge", "hcr.matches.challenge"),
+    ("/api/v1/matches/<id>/results", "hcr.matches.results"),
+    ("/api/v1/matches/<id>/join", "hcr.matches.join"),
+    ("/api/v1/matches/<id>/start", "hcr.matches.start"),
+    ("/api/v1/matches/<id>/submissions", "hcr.matches.submit"),
 ];
 
 /// Header carrying the authenticated player.
@@ -73,20 +82,41 @@ pub const PLAYER_HEADER: &str = "x-hcr-player";
 /// Serve one request.
 ///
 /// The single function a hotaru endpoint needs to call.
-pub async fn handle<TS>(router: &Router, ctx: &mut HttpContext<TS>) -> HttpResponse
+///
+/// `cors_allow_origin` is for browsers on a different origin — a Vite dev server
+/// on `:5173` talking to this service on `:8080`. Leave it `None` in production:
+/// the browser path there is MQTT-over-WebSocket, and a permissive
+/// `Access-Control-Allow-Origin` on a scoring API is not something to ship by
+/// accident.
+pub async fn handle<TS>(
+    router: &Router,
+    ctx: &mut HttpContext<TS>,
+    cors_allow_origin: Option<&str>,
+) -> HttpResponse
 where
     TS: hotaru_core::connection::TransportSpec,
 {
     let method = match ctx.method() {
         HttpMethod::GET => Method::Get,
         HttpMethod::POST => Method::Post,
+        // Preflight. Answered here rather than routed, since it addresses the
+        // transport rather than the service.
+        HttpMethod::OPTIONS => {
+            return with_cors(
+                response_templates::normal_response(StatusCode::NO_CONTENT, Vec::new()),
+                cors_allow_origin,
+            );
+        }
         // The binding uses only GET and POST; anything else is not a route.
         _ => {
-            return response_templates::normal_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                br#"{"error":{"code":"FORBIDDEN","message":"Only GET and POST are supported.","retryable":false}}"#.to_vec(),
-            )
-            .content_type(HttpContentType::ApplicationJson());
+            return with_cors(
+                response_templates::normal_response(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    br#"{"error":{"code":"FORBIDDEN","message":"Only GET and POST are supported.","retryable":false}}"#.to_vec(),
+                )
+                .content_type(HttpContentType::ApplicationJson()),
+                cors_allow_origin,
+            );
         }
     };
 
@@ -103,8 +133,24 @@ where
         })
         .await;
 
-    response_templates::normal_response(StatusCode::from(reply.status), reply.body)
-        .content_type(HttpContentType::ApplicationJson())
+    with_cors(
+        response_templates::normal_response(StatusCode::from(reply.status), reply.body)
+            .content_type(HttpContentType::ApplicationJson()),
+        cors_allow_origin,
+    )
+}
+
+fn with_cors(response: HttpResponse, allow_origin: Option<&str>) -> HttpResponse {
+    match allow_origin {
+        None => response,
+        Some(origin) => response
+            .add_header("Access-Control-Allow-Origin", origin)
+            .add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            .add_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, Authorization, X-HCR-Player",
+            ),
+    }
 }
 
 /// Take the request body as raw bytes.
@@ -141,6 +187,7 @@ where
 /// `Endpoint::<HTTP>::endpoint(pattern, name, make_handler(router))`.
 pub fn make_handler<TS>(
     router: Arc<Router>,
+    cors_allow_origin: Option<String>,
 ) -> impl for<'a> Fn(
     &'a mut HttpContext<TS>,
 ) -> std::pin::Pin<Box<dyn Future<Output = HttpResponse> + Send + 'a>>
@@ -154,6 +201,7 @@ where
 {
     move |ctx: &mut HttpContext<TS>| {
         let router = router.clone();
-        Box::pin(async move { handle(&router, ctx).await })
+        let cors = cors_allow_origin.clone();
+        Box::pin(async move { handle(&router, ctx, cors.as_deref()).await })
     }
 }
