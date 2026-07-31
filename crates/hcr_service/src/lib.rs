@@ -31,6 +31,8 @@
 #![forbid(unsafe_code)]
 
 pub mod binding;
+#[cfg(feature = "hotaru")]
+pub mod hotaru_binding;
 pub mod catalog;
 pub mod clock;
 pub mod error;
