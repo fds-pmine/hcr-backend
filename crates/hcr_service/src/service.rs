@@ -1,0 +1,437 @@
+//! The service surface: one method per contract operation.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+use hcr_contract::{
+    ChallengeDefinitionDto, ChallengeSummary, NextItem, ResponseOutcome, SessionRespond,
+    SessionResultDto, SessionSnapshot, SessionStart, SubmissionCreate, SubmissionResult,
+    SubmissionStatus, TerminalReason,
+};
+use hcr_contract::api::{ReplayInfo, ScoreInput};
+use hcr_contract::ScoreResult;
+use hcr_sim::{VoxelSet, calculate_score, key_to_coord};
+use hcr_contract::{
+    MatchChallengeRef, MatchConfig, MatchResults, MatchState, MatchSubmissionAck, TimeSync,
+};
+use hcr_qbank::{
+    Blueprint, ExposureController, HcrDynamicBank, OutcomeStore, SessionConfig,
+};
+
+use crate::catalog::CatalogStore;
+use crate::clock::{SharedClock, system_clock};
+use crate::rounds::MatchRegistry;
+use crate::error::{ServiceError, ServiceResult};
+use crate::itemref::ItemRefSigner;
+use crate::replay::{ENGINE_VERSION, ReplayPool, diverged};
+use crate::session::{SessionRegistry, SessionSpec};
+
+/// Service-wide configuration.
+#[derive(Debug, Clone)]
+pub struct ServiceConfig {
+    /// Adaptive session settings.
+    pub session: SessionConfig,
+    /// Content blueprint applied to every session.
+    pub blueprint: Blueprint,
+    /// Exposure policy applied to every session.
+    pub exposure: ExposureController,
+    /// Base seed; each session derives a distinct, reproducible seed from it.
+    pub seed: u64,
+    /// Sessions untouched for longer than this are evicted.
+    pub session_idle_timeout_ms: u64,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            session: SessionConfig::default(),
+            blueprint: Blueprint::unconstrained(),
+            exposure: ExposureController::default(),
+            seed: 0x5EED,
+            session_idle_timeout_ms: 30 * 60 * 1000,
+        }
+    }
+}
+
+/// The backend, minus any transport.
+///
+/// Every method here is a pure function of the request and the service's own
+/// state — nothing touches a socket. The MQTT and HTTP bindings are thin adapters
+/// that decode a request, call one of these, and encode the reply, which is what
+/// lets the whole surface be exercised without a broker or a runtime harness.
+#[derive(Debug)]
+pub struct HcrService {
+    catalog: Arc<CatalogStore>,
+    replay: Arc<ReplayPool>,
+    sessions: SessionRegistry,
+    signer: ItemRefSigner,
+    /// Submission id -> result. The idempotency record.
+    submissions: Mutex<HashMap<String, SubmissionResult>>,
+    config: ServiceConfig,
+    counter: AtomicU64,
+    clock: SharedClock,
+    matches: MatchRegistry,
+}
+
+impl HcrService {
+    /// Assemble a service.
+    pub fn new(
+        catalog: Arc<CatalogStore>,
+        replay: Arc<ReplayPool>,
+        signer: ItemRefSigner,
+        config: ServiceConfig,
+    ) -> Self {
+        Self::with_clock(catalog, replay, signer, config, system_clock())
+    }
+
+    /// Assemble a service over an explicit clock.
+    ///
+    /// Round deadlines are judged by this clock, so tests substitute a manual one
+    /// rather than waiting out a five-minute round.
+    pub fn with_clock(
+        catalog: Arc<CatalogStore>,
+        replay: Arc<ReplayPool>,
+        signer: ItemRefSigner,
+        config: ServiceConfig,
+        clock: SharedClock,
+    ) -> Self {
+        Self {
+            catalog,
+            replay,
+            sessions: SessionRegistry::new(),
+            signer,
+            submissions: Mutex::new(HashMap::new()),
+            config,
+            counter: AtomicU64::new(0),
+            clock: clock.clone(),
+            matches: MatchRegistry::new(clock),
+        }
+    }
+
+    /// The catalog store.
+    pub fn catalog(&self) -> &Arc<CatalogStore> {
+        &self.catalog
+    }
+
+    /// The replay pool.
+    pub fn replay_pool(&self) -> &Arc<ReplayPool> {
+        &self.replay
+    }
+
+    // -- catalog ---------------------------------------------------------
+
+    /// List the latest version of every challenge.
+    pub fn list_challenges(&self) -> ServiceResult<Vec<ChallengeSummary>> {
+        self.catalog.list()
+    }
+
+    /// Fetch a challenge, at a specific version or the latest.
+    pub fn get_challenge(
+        &self,
+        challenge_id: &str,
+        version: Option<u32>,
+    ) -> ServiceResult<Arc<ChallengeDefinitionDto>> {
+        self.catalog.get(challenge_id, version)
+    }
+
+    /// Score a finished run directly, without replaying a program.
+    ///
+    /// Exists for parity with the v1 frontend's `ScoreProvider`, so an HTTP
+    /// implementation of that interface can drop in with no UI or engine change.
+    /// It is **not** authoritative — the caller supplies the voxel sets — so it
+    /// must never be used to score a competitive round or an adaptive item.
+    pub fn score(&self, input: &ScoreInput) -> ServiceResult<ScoreResult> {
+        let parse = |keys: &[String]| -> ServiceResult<VoxelSet> {
+            keys.iter()
+                .map(|key| {
+                    key_to_coord(key).ok_or_else(|| ServiceError::ProgramInvalid {
+                        message: format!("Malformed voxel key \"{key}\"."),
+                        field: Some(key.clone()),
+                    })
+                })
+                .collect()
+        };
+
+        let target = parse(&input.target_voxels)?;
+        let result = parse(&input.result_voxels)?;
+        Ok(calculate_score(
+            &target,
+            &result,
+            &input.program_metrics,
+            &input.scoring,
+        )?)
+    }
+
+    // -- submissions -----------------------------------------------------
+
+    /// Score a program, authoritatively.
+    ///
+    /// Idempotent on `submission_id`: a repeat returns the stored result rather
+    /// than re-scoring. That matters because QoS 1 is at-least-once and HTTP
+    /// clients retry, so the same submission genuinely does arrive twice.
+    pub async fn create_submission(
+        &self,
+        request: SubmissionCreate,
+    ) -> ServiceResult<SubmissionResult> {
+        if let Some(existing) = self.stored_submission(&request.submission_id) {
+            return Ok(existing);
+        }
+
+        let dto = self
+            .catalog
+            .get(&request.challenge_id, Some(request.challenge_version))?;
+
+        // The server expands `repeat` itself inside replay; a client-supplied
+        // command list is never trusted, which is what gives the 500-command cap
+        // any force.
+        let outcome = self.replay.replay(&dto, &request.program).await?;
+
+        let status = match outcome.terminal.reason {
+            TerminalReason::Completed => SubmissionStatus::Completed,
+            _ => SubmissionStatus::Error,
+        };
+
+        let result = SubmissionResult {
+            submission_id: request.submission_id.clone(),
+            challenge_id: request.challenge_id,
+            challenge_version: request.challenge_version,
+            status,
+            score: outcome.score,
+            metrics: outcome.metrics,
+            result_voxels_hash: outcome.result_voxels_hash.clone(),
+            terminal: outcome.terminal.clone(),
+            replay: ReplayInfo {
+                engine_version: ENGINE_VERSION.to_string(),
+                tick_ms: self.replay.options().tick_ms,
+                simulated_ms: outcome.simulated_ms,
+                diverged_from_client: diverged(request.client_preview.as_ref(), &outcome),
+            },
+            error: None,
+        };
+
+        self.store_submission(&result);
+        Ok(result)
+    }
+
+    /// Fetch a previously scored submission.
+    pub fn get_submission(&self, submission_id: &str) -> ServiceResult<SubmissionResult> {
+        self.stored_submission(submission_id)
+            .ok_or(ServiceError::Internal("no such submission"))
+    }
+
+    fn stored_submission(&self, submission_id: &str) -> Option<SubmissionResult> {
+        self.submissions
+            .lock()
+            .ok()?
+            .get(submission_id)
+            .cloned()
+    }
+
+    fn store_submission(&self, result: &SubmissionResult) {
+        if let Ok(mut store) = self.submissions.lock() {
+            store.insert(result.submission_id.clone(), result.clone());
+        }
+    }
+
+    // -- sessions --------------------------------------------------------
+
+    /// Open an adaptive session.
+    pub async fn start_session(&self, request: SessionStart) -> ServiceResult<SessionSnapshot> {
+        let snapshot = self.catalog.snapshot()?;
+        if snapshot.is_empty() {
+            return Err(ServiceError::BankExhausted);
+        }
+
+        let ordinal = self.counter.fetch_add(1, Ordering::Relaxed);
+        let session_id = format!("s-{:016x}", self.config.seed ^ (ordinal.wrapping_mul(0x9E37_79B9_7F4A_7C15)));
+        let seed = self.config.seed.wrapping_add(ordinal);
+
+        let outcomes = OutcomeStore::new();
+        let bank = HcrDynamicBank::new(snapshot, outcomes.clone(), seed)
+            .with_blueprint(self.config.blueprint.clone())
+            .with_exposure(self.config.exposure.clone());
+
+        let handle = self
+            .sessions
+            .create(
+                SessionSpec {
+                    session_id,
+                    initial_theta: request.initial_theta.unwrap_or(0.0),
+                    config: self.config.session,
+                    seed,
+                },
+                bank,
+                outcomes,
+                self.signer.clone(),
+                self.now(),
+            )
+            .await;
+
+        handle.snapshot().await
+    }
+
+    /// Current state of a session.
+    pub async fn session_snapshot(&self, session_id: &str) -> ServiceResult<SessionSnapshot> {
+        self.sessions.get(session_id, self.now()).await?.snapshot().await
+    }
+
+    /// Serve the next item.
+    pub async fn next_item(&self, session_id: &str) -> ServiceResult<NextItem> {
+        self.sessions.get(session_id, self.now()).await?.next_item().await
+    }
+
+    /// Report a scored submission against the item currently awaiting a response.
+    ///
+    /// The submission must already have been scored: this reads the authoritative
+    /// score rather than accepting one from the caller, which is the whole point
+    /// of scoring server-side.
+    pub async fn respond(&self, request: SessionRespond) -> ServiceResult<ResponseOutcome> {
+        let claims = self.signer.verify(&request.item_ref)?;
+        if claims.session_id != request.session_id {
+            return Err(ServiceError::ItemRefInvalid("issued to another session"));
+        }
+
+        let submission = self
+            .stored_submission(&request.submission_id)
+            .ok_or(ServiceError::ItemRefInvalid(
+                "the referenced submission has not been scored",
+            ))?;
+
+        // Guard against answering item A with a program written for item B.
+        if submission.challenge_id != claims.item_id
+            || submission.challenge_version != claims.challenge_version
+        {
+            return Err(ServiceError::ItemRefInvalid(
+                "the submission scored a different challenge",
+            ));
+        }
+
+        let raw_score = (submission.score.final_score / 100.0).clamp(0.0, 1.0);
+
+        self.sessions
+            .get(&request.session_id, self.now())
+            .await?
+            .respond(claims, request.submission_id, raw_score)
+            .await
+    }
+
+    /// Close a session and issue its result.
+    pub async fn finalize_session(&self, session_id: &str) -> ServiceResult<SessionResultDto> {
+        let handle = self.sessions.get(session_id, self.now()).await?;
+        let result = handle.finalize().await?;
+        self.sessions.remove(session_id).await;
+        Ok(result)
+    }
+
+    /// Live session count.
+    pub async fn live_sessions(&self) -> usize {
+        self.sessions.len().await
+    }
+
+    /// Drop sessions idle beyond the configured timeout.
+    ///
+    /// Call periodically. An abandoned browser tab otherwise pins an arona
+    /// `Session` — bank, estimator and full response history — indefinitely.
+    pub async fn evict_idle_sessions(&self) -> Vec<String> {
+        self.sessions
+            .evict_idle(self.now(), self.config.session_idle_timeout_ms)
+            .await
+    }
+
+    // -- competitive rounds ----------------------------------------------
+
+    /// Server clock, for deadline arithmetic and client offset estimation.
+    pub fn now(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
+    /// Answer a clock-synchronisation probe.
+    pub fn time_sync(&self, client_sent_at: u64) -> TimeSync {
+        TimeSync {
+            client_sent_at,
+            server_time: self.now(),
+        }
+    }
+
+    /// Open a round.
+    ///
+    /// The challenge is chosen now but **not revealed** until the round starts:
+    /// handing it out during the lobby would give early joiners a head start.
+    pub fn create_match(&self, config: MatchConfig) -> ServiceResult<MatchState> {
+        let challenge = match &config.challenge_ref {
+            Some(pinned) => {
+                // Fail now if it does not exist, rather than at reveal time.
+                self.catalog
+                    .get(&pinned.challenge_id, Some(pinned.version))?;
+                pinned.clone()
+            }
+            None => {
+                let first = self
+                    .catalog
+                    .list()?
+                    .into_iter()
+                    .next()
+                    .ok_or(ServiceError::BankExhausted)?;
+                let dto = self.catalog.get(&first.id, None)?;
+                MatchChallengeRef {
+                    challenge_id: dto.challenge.id.clone(),
+                    version: dto.meta.version,
+                }
+            }
+        };
+        self.matches.create(config, challenge)
+    }
+
+    /// Join a round's lobby.
+    pub fn join_match(
+        &self,
+        match_id: &str,
+        player_id: &str,
+        display_name: &str,
+    ) -> ServiceResult<MatchState> {
+        self.matches.join(match_id, player_id, display_name)
+    }
+
+    /// Start a round: fix the roster, set the deadline, reveal the challenge.
+    pub fn start_match(&self, match_id: &str) -> ServiceResult<MatchState> {
+        self.matches.start(match_id)
+    }
+
+    /// Current round state.
+    pub fn match_state(&self, match_id: &str) -> ServiceResult<MatchState> {
+        self.matches.state(match_id)
+    }
+
+    /// The challenge a round is running, once revealed.
+    pub fn match_challenge(&self, match_id: &str) -> ServiceResult<Arc<ChallengeDefinitionDto>> {
+        let reference = self.matches.challenge_ref(match_id)?;
+        self.catalog
+            .get(&reference.challenge_id, Some(reference.version))
+    }
+
+    /// Score a program and enter it into a round.
+    ///
+    /// The reply carries no score. Acceptance is decided purely by server receive
+    /// time against the deadline, so a client clock cannot buy extra seconds.
+    pub async fn submit_to_match(
+        &self,
+        match_id: &str,
+        player_id: &str,
+        request: SubmissionCreate,
+    ) -> ServiceResult<MatchSubmissionAck> {
+        let result = self.create_submission(request).await?;
+        self.matches.submit(match_id, player_id, &result)
+    }
+
+    /// Final standings, once the round has closed.
+    pub fn match_results(&self, match_id: &str) -> ServiceResult<MatchResults> {
+        self.matches.results(match_id)
+    }
+
+    /// Abandon a round.
+    pub fn cancel_match(&self, match_id: &str) -> ServiceResult<MatchState> {
+        self.matches.cancel(match_id)
+    }
+}

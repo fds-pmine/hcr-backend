@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/hcr_contract",
     "crates/hcr_qbank",
+    "crates/hcr_service",
     "crates/hcr_sim",
     "crates/hcr_ws",
 ]

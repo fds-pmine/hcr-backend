@@ -47,6 +47,6 @@ pub use program::{estimate_program_duration, expand_program, expand_program_defa
 pub use scoring::{calculate_score, validate_scoring_config};
 pub use state::JointAngles;
 pub use voxel::{
-    VoxelSet, calculate_voxel_iou, coord_to_key, find_swept_voxel_hits, result_voxels_hash,
-    segment_intersects_aabb, voxel_coord_to_world,
+    VoxelSet, calculate_voxel_iou, coord_to_key, find_swept_voxel_hits, key_to_coord,
+    result_voxels_hash, segment_intersects_aabb, voxel_coord_to_world,
 };

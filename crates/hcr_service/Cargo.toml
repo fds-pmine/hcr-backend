@@ -1,0 +1,27 @@
+[package]
+name = "hcr_service"
+description = "HCR backend service core: catalog, authoritative replay, adaptive sessions."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hcr_contract = { workspace = true, features = ["std"] }
+hcr_sim = { workspace = true, features = ["std"] }
+hcr_qbank = { path = "../hcr_qbank" }
+arona = { path = "../../../arona" }
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+# HMAC-SHA256 for itemRef tokens. Unlike the WebSocket handshake's SHA-1, this
+# one IS a security primitive: it is what stops a client forging an item binding.
+hmac = "0.12"
+sha2 = { workspace = true, features = ["std"] }
+base64 = { version = "0.22", features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[lints.rust]
+missing_docs = "warn"

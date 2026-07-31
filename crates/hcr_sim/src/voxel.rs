@@ -22,6 +22,22 @@ pub fn coord_to_key(coord: &VoxelCoord) -> String {
     format!("{},{},{}", coord.x, coord.y, coord.z)
 }
 
+/// Parse the canonical `"x,y,z"` form.
+///
+/// Mirrors `keyToCoord` in `src/features/voxel/voxelKey.ts`, including its
+/// insistence on exactly three integer components — a malformed key is a bug
+/// upstream, not something to coerce.
+pub fn key_to_coord(key: &str) -> Option<VoxelCoord> {
+    let mut parts = key.split(',');
+    let x = parts.next()?.trim().parse().ok()?;
+    let y = parts.next()?.trim().parse().ok()?;
+    let z = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(VoxelCoord { x, y, z })
+}
+
 /// World-space centre of a lattice cell.
 pub fn voxel_coord_to_world(coord: &VoxelCoord, origin: Vec3, size: f64) -> Vec3 {
     [

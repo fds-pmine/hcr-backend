@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arona::qbank::{QBankError, QBankStats, QuestionBank};
 use arona::selection::SelectionHints;
@@ -41,6 +41,57 @@ pub struct ServedItem {
     pub version: u32,
 }
 
+/// A serve log that outlives the bank.
+///
+/// `Session::new` takes the bank as a `Box<dyn QuestionBank>` and consumes it, so
+/// once a session is running there is no way to call back into the concrete bank
+/// to turn arona's `last_selected_index()` into an item identity. Handing out a
+/// shared log before construction is what keeps that mapping reachable — and it
+/// is the mapping the signed `itemRef` carries across the wire.
+#[derive(Debug, Clone, Default)]
+pub struct SharedServedLog(Arc<Mutex<Vec<ServedItem>>>);
+
+impl SharedServedLog {
+    /// A fresh, empty log.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Copy of the log, in serve order.
+    pub fn snapshot(&self) -> Vec<ServedItem> {
+        self.lock().clone()
+    }
+
+    /// The item served at arona bank index `index`.
+    pub fn get(&self, index: usize) -> Option<ServedItem> {
+        self.lock().get(index).cloned()
+    }
+
+    /// Items served so far.
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether nothing has been served.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn push(&self, item: ServedItem) {
+        self.lock().push(item);
+    }
+
+    fn clear(&self) {
+        self.lock().clear();
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<ServedItem>> {
+        // Poisoning would mean a panic mid-serve; the log is plain data, so
+        // recovering it is strictly better than propagating the panic.
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// A question bank over a mutable catalog.
 ///
 /// Everything here is deliberately outside arona, because `StaticQBank` provides
@@ -55,7 +106,7 @@ pub struct HcrDynamicBank {
     blueprint: Blueprint,
     exposure: ExposureController,
     outcomes: OutcomeStore,
-    served: Vec<ServedItem>,
+    served: SharedServedLog,
     used: HashSet<ItemId>,
     rng: StdRng,
     randomesque_k: usize,
@@ -77,7 +128,7 @@ impl HcrDynamicBank {
             blueprint: Blueprint::unconstrained(),
             exposure: ExposureController::default(),
             outcomes,
-            served: Vec::new(),
+            served: SharedServedLog::new(),
             used: HashSet::new(),
             rng: StdRng::seed_from_u64(seed),
             randomesque_k: DEFAULT_RANDOMESQUE_K,
@@ -157,8 +208,8 @@ impl HcrDynamicBank {
     }
 
     /// Items served so far, in order. Index `i` is arona's bank index `i`.
-    pub fn served(&self) -> &[ServedItem] {
-        &self.served
+    pub fn served(&self) -> Vec<ServedItem> {
+        self.served.snapshot()
     }
 
     /// Resolve an arona bank index back to an item.
@@ -167,8 +218,14 @@ impl HcrDynamicBank {
     /// (`arona/src/core/question.rs:159-165`), so this map is what lets the
     /// service turn a selection back into something nameable — and it is what the
     /// signed `itemRef` token carries across the wire.
-    pub fn item_at(&self, index: usize) -> Option<&ServedItem> {
+    pub fn item_at(&self, index: usize) -> Option<ServedItem> {
         self.served.get(index)
+    }
+
+    /// A handle to the serve log that survives the bank being moved into a
+    /// `Session`. Take this **before** constructing the session.
+    pub fn served_log(&self) -> SharedServedLog {
+        self.served.clone()
     }
 
     /// The shared outcome store.
@@ -438,5 +495,16 @@ impl QuestionBank for HcrDynamicBank {
 
     fn last_selected_index(&self) -> Option<usize> {
         self.served.len().checked_sub(1)
+    }
+}
+
+impl HcrDynamicBank {
+    /// Install a caller-supplied serve log, replacing the bank's own.
+    ///
+    /// Use when the log handle must exist before the bank does — for instance
+    /// when the session actor is built around it.
+    pub fn with_served_log(mut self, log: SharedServedLog) -> Self {
+        self.served = log;
+        self
     }
 }

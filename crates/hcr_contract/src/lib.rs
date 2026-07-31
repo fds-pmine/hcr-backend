@@ -13,10 +13,22 @@
 
 extern crate alloc;
 
+pub mod api;
 pub mod catalog;
 pub mod domain;
+pub mod round;
 pub mod wire;
 
+pub use round::{
+    MatchChallengeRef, MatchConfig, MatchPhase, MatchPlayer, MatchRejection, MatchResultRow,
+    MatchResults, MatchState, MatchSubmissionAck, RankBy, TimeSync,
+};
+
+pub use api::{
+    ChallengeSummary, ClientPreview, NextItem, ReplayInfo, ResponseOutcome, SessionItemRecord,
+    SessionLifecycle, SessionRespond, SessionResultDto, SessionSnapshot, SessionStart,
+    SubmissionCreate, SubmissionResult, SubmissionStatus,
+};
 pub use catalog::{
     CalibrationState, ChallengeDefinitionDto, ChallengeMeta, GeneratorProvenance, ItemId,
     ItemParameters, SkillDimension,

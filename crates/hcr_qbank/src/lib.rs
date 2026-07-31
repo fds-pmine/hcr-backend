@@ -83,7 +83,7 @@ pub mod item;
 pub mod mastery;
 pub mod session;
 
-pub use bank::{FIELD_BOOST, HcrDynamicBank, ServedItem};
+pub use bank::{FIELD_BOOST, HcrDynamicBank, ServedItem, SharedServedLog};
 pub use blueprint::Blueprint;
 pub use calibration::{
     CalibrationPipeline, CalibrationSettings, DriftReport, FitResult, ItemFit, ItemObservations,
