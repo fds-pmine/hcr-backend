@@ -1,0 +1,20 @@
+[package]
+name = "hcr_ws"
+description = "Sans-io RFC 6455 WebSocket framing, sized for the MQTT-over-WebSocket binding."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# SHA-1 is mandated by RFC 6455 §4.2.2 for Sec-WebSocket-Accept. It is used here
+# only as a handshake checksum, never as a security primitive.
+sha1 = { version = "0.10", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+
+[features]
+default = ["std"]
+std = ["sha1/std", "base64/std"]
+
+[lints.rust]
+missing_docs = "warn"

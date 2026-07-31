@@ -1,0 +1,27 @@
+[package]
+name = "hcr_qbank"
+description = "Adaptive question bank for HCR challenges, built on the arona CAT engine."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# arona is std-only (no #![no_std], uses std::time / HashMap / thread_rng), so
+# this crate is std-only too. That is by design: CAT is a server concern and
+# never runs on-device.
+arona = { path = "../../../arona" }
+hcr_contract = { workspace = true, features = ["std"] }
+# Difficulty features are geometric, so they reuse the simulation core's
+# voxel/world transforms rather than re-deriving them.
+hcr_sim = { workspace = true, features = ["std"] }
+# Matches arona's own rand major so the dependency is not duplicated.
+rand = "0.8"
+
+[dev-dependencies]
+# Integration tests synthesise responses from known parameters to check the
+# calibration pipeline recovers them.
+rand = "0.8"
+
+[lints.rust]
+missing_docs = "warn"

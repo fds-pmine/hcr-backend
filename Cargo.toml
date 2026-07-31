@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/hcr_contract",
+    "crates/hcr_qbank",
+    "crates/hcr_sim",
+    "crates/hcr_ws",
+]
+
+# NOTE: hcr_service / hcr_firmware are deliberately NOT members yet.
+#   * hcr_service depends on hotaru_mqtt, which currently fails to build against
+#     the hotaru checkout in this repo (hotaru_mqtt_broker asks hotaru_core for
+#     feature `full`; hotaru_core 0.8.4 renamed it to `full_regex`).
+#   * hcr_firmware is no_std and must never be built via `--workspace` — mixing
+#     std and no_std members trips hotaru's own compile_error! guards.
+# See docs/backend/04-SERVICE.md §10 and §1.
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+hcr_contract = { path = "crates/hcr_contract", default-features = false }
+hcr_sim = { path = "crates/hcr_sim", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1

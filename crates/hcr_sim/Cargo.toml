@@ -1,0 +1,24 @@
+[package]
+name = "hcr_sim"
+description = "Deterministic HCR simulation core — kinematics, head-safety, voxel sweep and scoring. Shared by server replay and device firmware."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hcr_contract = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+# Used in std builds too, so server and firmware share one trig implementation.
+libm = "0.2"
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["std"] }
+
+[features]
+default = ["std"]
+std = ["hcr_contract/std", "serde/std", "sha2/std"]
+
+[lints.rust]
+missing_docs = "warn"
