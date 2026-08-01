@@ -17,6 +17,9 @@ hcr_contract = { workspace = true, features = ["std"] }
 hcr_sim = { workspace = true, features = ["std"] }
 # Matches arona's own rand major so the dependency is not duplicated.
 rand = "0.8"
+# Starter workspaces are emitted as the Blockly JSON blob the editor loads;
+# `ChallengeDefinition::starter_workspace` is already a `serde_json::Value`.
+serde_json = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 # Integration tests synthesise responses from known parameters to check the

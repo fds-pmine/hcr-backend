@@ -50,6 +50,13 @@ pub struct HttpCall {
     /// Never read from the body: a client that could name itself could submit as
     /// somebody else.
     pub player_id: Option<String>,
+    /// Display name for the roster and the leaderboard.
+    ///
+    /// Cosmetic, and separate from [`Self::player_id`] on purpose. Identity
+    /// decides what a caller may *do* and must come from the auth layer; a label
+    /// decides only what other players read, so letting the client choose it
+    /// costs nothing. Falls back to the player id when absent.
+    pub display_name: Option<String>,
 }
 
 impl HttpCall {
@@ -60,6 +67,7 @@ impl HttpCall {
             path: path.into(),
             body: Vec::new(),
             player_id: None,
+            display_name: None,
         }
     }
 
@@ -70,12 +78,24 @@ impl HttpCall {
             path: path.into(),
             body: serde_json::to_vec(&body).unwrap_or_default(),
             player_id: None,
+            display_name: None,
         }
     }
 
     /// Attach the authenticated player.
     pub fn as_player(mut self, player_id: impl Into<String>) -> Self {
         self.player_id = Some(player_id.into());
+        self
+    }
+
+    /// Attach the authenticated player together with a display name.
+    pub fn as_player_named(
+        mut self,
+        player_id: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Self {
+        self.player_id = Some(player_id.into());
+        self.display_name = Some(display_name.into());
         self
     }
 }
@@ -126,6 +146,7 @@ pub fn status_for(code: HcrErrorCode) -> u16 {
         | HcrErrorCode::WeightsInvalid => 422,
         HcrErrorCode::ItemRefInvalid
         | HcrErrorCode::SessionTerminated
+        | HcrErrorCode::MatchNotReady
         | HcrErrorCode::BankExhausted
         | HcrErrorCode::DeviceOffline
         | HcrErrorCode::DeviceBusy => 409,
@@ -192,7 +213,14 @@ impl Router {
             // -- submissions --
             (Method::Post, ["submissions"]) => {
                 let request: SubmissionCreate = decode(&call.body)?;
-                Ok(HttpReply::ok(&service.create_submission(request).await?))
+                // The player is passed for the usage log only. It grants
+                // nothing: solo scoring is the same for every caller, and on a
+                // public deployment this value is whatever the client claimed.
+                Ok(HttpReply::ok(
+                    &service
+                        .create_submission_for(request, call.player_id.as_deref())
+                        .await?,
+                ))
             }
             (Method::Get, ["submissions", id]) => Ok(HttpReply::ok(&service.get_submission(id)?)),
 
@@ -236,7 +264,8 @@ impl Router {
                 let player = call.player_id.as_deref().ok_or(ServiceError::Internal(
                     "join requires an authenticated player",
                 ))?;
-                Ok(HttpReply::ok(&service.join_match(id, player, player)?))
+                let display_name = call.display_name.as_deref().unwrap_or(player);
+                Ok(HttpReply::ok(&service.join_match(id, player, display_name)?))
             }
             (Method::Post, ["matches", id, "start"]) => {
                 Ok(HttpReply::ok(&service.start_match(id)?))

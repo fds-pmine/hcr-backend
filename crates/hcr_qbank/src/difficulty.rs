@@ -51,11 +51,19 @@ impl DifficultyModel {
         Self {
             // Calibrated against the measured feature distribution of the
             // reference `cap-trim` family (see `examples/family_probe.rs`), whose
-            // median item contributes ≈ 5.1 across the five terms. An earlier
+            // median item contributes ≈ 5.2 across the five terms. An earlier
             // guess of -2.0 put more than half the family at the +3 ceiling,
             // making every generated item look equally hard and defeating
             // difficulty targeting entirely.
-            intercept: -5.0,
+            //
+            // Re-centred from -5.0 when `region_turn` was restricted to sector
+            // orientations the arm can reach. Dropping the unreachable ones
+            // removed the whole low end of `reach_strain` (min 0.221 → 0.590),
+            // which lifted the family's median predicted `b` from 0.04 to 0.18.
+            // The prior should sit at the ability it is meant to describe, so
+            // the intercept absorbs the shift rather than leaving every
+            // uncalibrated item quietly overrated.
+            intercept: -5.18,
             // ln-scaled: a 200-voxel job contributes ~5.3 × 0.30 ≈ 1.6 logits
             // more than a 5-voxel one.
             removal_volume: 0.30,

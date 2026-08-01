@@ -82,6 +82,7 @@ pub mod generator;
 pub mod item;
 pub mod mastery;
 pub mod session;
+pub mod starter;
 
 pub use bank::{FIELD_BOOST, HcrDynamicBank, ServedItem, SharedServedLog};
 pub use blueprint::Blueprint;
@@ -101,3 +102,4 @@ pub use generator::{
 pub use item::{BankItem, CatalogSnapshot};
 pub use mastery::{is_mastered, raw_from_remapped, remap_for_arona};
 pub use session::{SessionConfig, build_session};
+pub use starter::derive_starter_workspace;

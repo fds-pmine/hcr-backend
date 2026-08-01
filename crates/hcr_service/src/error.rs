@@ -36,6 +36,8 @@ pub enum ServiceError {
     SessionTerminated,
     /// The session is not expecting a response right now.
     SessionNotAwaitingResponse,
+    /// The round has not reached the stage the request needs.
+    MatchNotReady(&'static str),
     /// The bank could not supply an item.
     BankExhausted,
     /// Replay capacity is saturated.
@@ -59,6 +61,7 @@ impl ServiceError {
             ServiceError::SessionTerminated | ServiceError::SessionNotAwaitingResponse => {
                 HcrErrorCode::SessionTerminated
             }
+            ServiceError::MatchNotReady(_) => HcrErrorCode::MatchNotReady,
             ServiceError::BankExhausted => HcrErrorCode::BankExhausted,
             ServiceError::RateLimited => HcrErrorCode::RateLimited,
             ServiceError::ReplayTimeout => HcrErrorCode::ReplayTimeout,
@@ -99,6 +102,8 @@ impl std::fmt::Display for ServiceError {
             ServiceError::SessionNotAwaitingResponse => {
                 write!(f, "The session is not awaiting a response.")
             }
+            // Shown to a waiting player, so it says what to do, not what broke.
+            ServiceError::MatchNotReady(reason) => write!(f, "{reason}"),
             ServiceError::BankExhausted => {
                 write!(f, "The question bank has no suitable item available.")
             }

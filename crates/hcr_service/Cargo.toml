@@ -44,5 +44,12 @@ tokio = { version = "1", features = ["full"] }
 name = "serve"
 required-features = ["hotaru"]
 
+# The deployable server. Needs the framework adapter, so it is feature-gated
+# exactly like the example — the library core stays transport-free either way.
+[[bin]]
+name = "hcr-server"
+path = "src/bin/hcr-server.rs"
+required-features = ["hotaru"]
+
 [lints.rust]
 missing_docs = "warn"

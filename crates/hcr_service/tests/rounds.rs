@@ -35,6 +35,7 @@ fn service_at(clock: &ManualClock, idle_timeout_ms: u64) -> HcrService {
             exposure: ExposureController::unlimited(),
             seed: 7,
             session_idle_timeout_ms: idle_timeout_ms,
+            ..ServiceConfig::default()
         },
         Arc::new(clock.clone()),
     )
@@ -564,4 +565,156 @@ async fn eviction_leaves_other_sessions_untouched() {
 
     assert_eq!(evicted, vec![stale]);
     assert!(service.session_snapshot(&fresh).await.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Room codes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn room_codes_are_short_unambiguous_and_unique() {
+    let clock = ManualClock::new(T0);
+    let registry = MatchRegistry::new(Arc::new(clock.clone()));
+
+    let codes: Vec<String> = (0..200)
+        .map(|_| {
+            registry
+                .create(
+                    config(60_000),
+                    MatchChallengeRef {
+                        challenge_id: "easy".into(),
+                        version: 1,
+                    },
+                )
+                .unwrap()
+                .match_id
+        })
+        .collect();
+
+    for code in &codes {
+        // A code has to survive being read out loud, so no I/O/0/1 and nothing
+        // case-sensitive to get wrong.
+        assert_eq!(code.len(), 6, "{code}");
+        assert!(
+            code.chars()
+                .all(|c| c.is_ascii_uppercase() && !matches!(c, 'I' | 'O')
+                    || matches!(c, '2'..='9')),
+            "{code}"
+        );
+    }
+
+    let unique: std::collections::HashSet<&String> = codes.iter().collect();
+    assert_eq!(unique.len(), codes.len(), "codes collided");
+}
+
+#[test]
+fn room_codes_are_not_sequential() {
+    // The id is the only thing gating entry to a lobby, so a code a stranger can
+    // reach by counting is a room a stranger can walk into. This also stops the
+    // codes from publishing how many rounds the server has opened.
+    let clock = ManualClock::new(T0);
+    let open = || {
+        let registry = MatchRegistry::new(Arc::new(clock.clone()));
+        registry
+            .create(
+                config(60_000),
+                MatchChallengeRef {
+                    challenge_id: "easy".into(),
+                    version: 1,
+                },
+            )
+            .unwrap()
+            .match_id
+    };
+
+    // Two fresh registries each open their *first* room. A counter-derived id
+    // would make these identical and predictable.
+    assert_ne!(open(), open());
+}
+
+// ---------------------------------------------------------------------------
+// Eviction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn finished_and_abandoned_rounds_are_reclaimed_but_running_ones_are_not() {
+    // The registry is the storage — there is no database behind it — so a public
+    // server that never evicts grows for as long as it runs, and anyone can
+    // create rooms.
+    let clock = ManualClock::new(T0);
+    let registry = MatchRegistry::new(Arc::new(clock.clone()));
+    let open = || {
+        registry
+            .create(
+                config(60_000),
+                MatchChallengeRef {
+                    challenge_id: "easy".into(),
+                    version: 1,
+                },
+            )
+            .unwrap()
+            .match_id
+    };
+
+    let abandoned = open();
+    let running = open();
+    registry.join(&running, "alice", "Alice").unwrap();
+    registry.start(&running).unwrap();
+
+    // An hour on: the lobby nobody started is gone; the round in progress is not.
+    let evicted = registry.evict_idle(T0 + 3_600_000, 15 * 60_000, 30 * 60_000);
+    assert_eq!(evicted, vec![abandoned.clone()]);
+    assert!(registry.state(&running).is_ok());
+    assert!(registry.state(&abandoned).is_err());
+
+    // Once it closes it becomes a result, and is kept only for the retention
+    // window — long enough to read the scoreboard.
+    clock.set(T0 + 3_600_000);
+    registry.state(&running).unwrap();
+    assert!(registry.evict_idle(T0 + 3_600_000, 15 * 60_000, 30 * 60_000).is_empty());
+    assert_eq!(
+        registry.evict_idle(T0 + 3_600_000 + 16 * 60_000, 15 * 60_000, 30 * 60_000),
+        vec![running]
+    );
+    assert!(registry.is_empty());
+}
+
+#[test]
+fn reading_a_scoreboard_keeps_it_alive() {
+    // Retention runs from the last look, not from the close, so a round does not
+    // vanish out from under the people still reading it.
+    let clock = ManualClock::new(T0);
+    let registry = MatchRegistry::new(Arc::new(clock.clone()));
+    let match_id = registry
+        .create(
+            config(1_000),
+            MatchChallengeRef {
+                challenge_id: "easy".into(),
+                version: 1,
+            },
+        )
+        .unwrap()
+        .match_id;
+    registry.join(&match_id, "alice", "Alice").unwrap();
+    registry.start(&match_id).unwrap();
+
+    clock.set(T0 + 2_000);
+    registry.state(&match_id).unwrap(); // settles to Results
+
+    // Somebody is still watching at +14 minutes.
+    clock.set(T0 + 14 * 60_000);
+    registry.state(&match_id).unwrap();
+
+    // So at +20 minutes it has still only been idle for 6.
+    assert!(
+        registry
+            .evict_idle(T0 + 20 * 60_000, 15 * 60_000, 30 * 60_000)
+            .is_empty()
+    );
+    assert_eq!(
+        registry
+            .evict_idle(T0 + 30 * 60_000, 15 * 60_000, 30 * 60_000)
+            .len(),
+        1
+    );
 }

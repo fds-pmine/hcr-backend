@@ -1,0 +1,55 @@
+# Caddy in front of hcr-server.
+#
+#   sudo install -m0644 deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Caddy is used rather than nginx for one reason: it obtains and renews the
+# certificate itself, and a expired certificate is the most common way a small
+# deployment goes dark.
+
+hcrapi.pmine.org {
+	# The API is plain HTTP on loopback; this is the only thing that should
+	# reach it.
+	reverse_proxy 127.0.0.1:18623
+
+	# Rate limiting belongs here, not in the service.
+	#
+	# hcr-server cannot do it usefully: the only caller identity it has is a
+	# header the client chooses, so a per-player limit is bypassed by picking
+	# a new id. Caddy sees the real address. `ReplayPool` still bounds
+	# concurrent replays and returns 429 when saturated — that protects the
+	# CPU; this protects it from being *reached* that hard in the first place.
+	#
+	# Needs the rate_limit module:
+	#   caddy add-package github.com/mholt/caddy-ratelimit
+	# Without it Caddy will refuse to start — delete this block if you would
+	# rather not build a custom Caddy, and rely on Cloudflare's rate limiting.
+	rate_limit {
+		zone api {
+			key {remote_host}
+			events 120
+			window 1m
+		}
+	}
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		# An API is never a document to be framed.
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/hcrapi.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		# The usage log is the analytics record and carries no addresses.
+		# Access logs are for operations; keep them short-lived.
+		format json
+	}
+}

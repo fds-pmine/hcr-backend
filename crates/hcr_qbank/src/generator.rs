@@ -232,10 +232,14 @@ impl CapTrimGenerator {
     /// Build a generator around a prototype challenge, which supplies the robot
     /// geometry, voxel lattice and scoring config. Only the hairstyles vary.
     pub fn new(prototype: ChallengeDefinition) -> Self {
+        let (turn_min, turn_max) = Self::reachable_turns(&prototype);
         Self {
             family: ItemFamily {
                 id: "cap-trim".to_string(),
-                version: "1".to_string(),
+                // Bumped from "1": the parameter space narrowed, so items built
+                // by the old generator are not comparable to these and must not
+                // pool their responses during calibration.
+                version: "2".to_string(),
                 dimensions: vec![
                     SkillDimension::Kinematics,
                     SkillDimension::Precision,
@@ -245,12 +249,51 @@ impl CapTrimGenerator {
                     ParamSpec::new(Self::CAP_THICKNESS, 1.0, 3.0),
                     ParamSpec::new(Self::TRIM_DEPTH, 1.0, 3.0),
                     ParamSpec::new(Self::REGION_SPAN, 0.25, 1.0),
-                    ParamSpec::new(Self::REGION_TURN, 0.0, 1.0),
+                    ParamSpec::new(Self::REGION_TURN, turn_min, turn_max),
                 ],
                 hardware_compatible: true,
             },
             prototype,
         }
+    }
+
+    /// The sector orientations this arm can actually reach.
+    ///
+    /// `region_turn` places the sector centre at azimuth `region_turn · 2π`, and
+    /// the arm's azimuth is `−baseYaw` ([`crate::starter`]). So the reachable
+    /// centres are exactly `−baseYaw_max ..= −baseYaw_min`, expressed as a
+    /// fraction of a turn.
+    ///
+    /// # Why this is a restriction and not a nicety
+    ///
+    /// The full turn let a seed place the trim sector behind the head, where the
+    /// arm cannot go. At the narrow end of `region_span` the whole sector landed
+    /// there, and the result was not a hard item — it was an item **no program
+    /// can affect**. Every player scores the same on it whatever they do, so its
+    /// discrimination is zero: it measures nothing, ranks nobody, and pollutes
+    /// calibration with responses that carry no signal.
+    ///
+    /// Bounding the centre is sufficient rather than merely conservative: the
+    /// sector contains its own centre, so a reachable centre guarantees the arm
+    /// can reach *some* of what it must trim. A wide sector may still spill past
+    /// what the arm covers, which is a legitimate way for an item to be hard —
+    /// it caps the achievable score equally for everyone rather than flattening
+    /// it.
+    ///
+    /// Falls back to the full turn when the prototype has no `baseYaw`, since
+    /// then there is nothing to reason from.
+    fn reachable_turns(prototype: &ChallengeDefinition) -> (f64, f64) {
+        prototype
+            .robot_config
+            .joints
+            .iter()
+            .find(|joint| joint.id == "baseYaw")
+            .map_or((0.0, 1.0), |joint| {
+                (
+                    -joint.max_angle_deg / 360.0,
+                    -joint.min_angle_deg / 360.0,
+                )
+            })
     }
 
     fn param(params: &ParamVector, name: &str) -> Result<f64, GenError> {
@@ -356,7 +399,7 @@ impl ChallengeGenerator for CapTrimGenerator {
         }
 
         let id = format!("{}-{seed:016x}", self.family.id);
-        Ok(ChallengeDefinition {
+        let mut challenge = ChallengeDefinition {
             id: id.clone(),
             name: format!("Cap Trim {:.0}%", region_span * 100.0),
             description: format!(
@@ -377,8 +420,18 @@ impl ChallengeGenerator for CapTrimGenerator {
                 voxels: target,
             },
             allowed_blocks: self.prototype.allowed_blocks.clone(),
+            // Derived below, once the challenge it has to be safe *in* exists.
             starter_workspace: None,
             scoring: self.prototype.scoring,
-        })
+        };
+
+        // Aimed at the sector this seed actually trims, and simulated before it
+        // is kept. `None` is a valid outcome: an item whose sector the arm
+        // cannot safely reach ships without a starter rather than with a
+        // program that halts on the head.
+        challenge.starter_workspace =
+            crate::starter::derive_starter_workspace(&challenge, region_turn);
+
+        Ok(challenge)
     }
 }

@@ -1,0 +1,77 @@
+# systemd unit for hcr-server.
+#
+#   sudo install -m0644 deploy/hcr-server.service /etc/systemd/system/
+#   sudo install -m0640 -o root -g hcr deploy/hcr-server.env /etc/hcr-server.env
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hcr-server
+#
+# Create the user and state directory first:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin hcr
+#   sudo install -d -o hcr -g hcr /var/lib/hcr
+
+[Unit]
+Description=HCR Simulator API
+# systemd has no inline comments: everything after `=` is the value, so a
+# trailing "# ..." becomes part of it. Put the repository URL here.
+Documentation=https://github.com/
+After=network-online.target
+Wants=network-online.target
+
+# Give up after 5 failures in 60s instead of restarting forever. A misconfigured
+# server — an occupied port, a missing key — otherwise loops silently, burning
+# CPU and burying the one useful line in a wall of restart messages. Failing
+# loudly is what makes `systemctl status` tell you what is wrong.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=hcr
+Group=hcr
+ExecStart=/usr/local/bin/hcr-server
+
+# Secrets and settings live here, not on the command line, where they would be
+# visible to every user on the box via /proc.
+EnvironmentFile=/etc/hcr-server.env
+
+Restart=always
+RestartSec=2s
+
+# All state is in memory: a restart drops every round in progress. Nothing is
+# lost permanently, but do not restart casually during a session.
+
+# --- sandboxing -------------------------------------------------------------
+# The service reads one file it was compiled with and writes one it was told
+# about. Everything below removes access it has no use for, so a bug in the
+# request path has as little to reach for as possible.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# The one writable path: the usage log.
+ReadWritePaths=/var/lib/hcr
+
+# Binds a high port only, so no capabilities are needed at all.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Replay is CPU-bound and the pool is sized to the core count. This is a
+# backstop against a pathological program, not the primary bound.
+MemoryMax=1G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

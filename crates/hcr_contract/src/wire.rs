@@ -104,6 +104,14 @@ pub enum HcrErrorCode {
     SessionNotFound,
     /// Session already terminated.
     SessionTerminated,
+    /// The round has not reached the stage the request needs.
+    ///
+    /// Asking for the challenge during the lobby, or for results while the round
+    /// is still running. Both are refusals by design rather than faults — the
+    /// caller should try again later, not differently — and neither is a session
+    /// that terminated or a reference that was forged, which is what they had to
+    /// borrow a code from before this existed.
+    MatchNotReady,
     /// The question bank could not supply an item.
     BankExhausted,
     /// Device is not connected.

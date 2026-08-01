@@ -403,3 +403,116 @@ fn generation_targets_the_requested_difficulty() {
         generated[1].predicted_difficulty
     );
 }
+
+// ---------------------------------------------------------------------------
+// Derived starter workspaces
+// ---------------------------------------------------------------------------
+
+/// Flatten the emitted Blockly workspace back into `(jointId, angle)` pairs.
+fn starter_blocks(workspace: &serde_json::Value) -> Vec<(String, f64)> {
+    let mut chain = Vec::new();
+    let mut node = workspace["blocks"]["blocks"][0].clone();
+    loop {
+        assert_eq!(node["type"], "hcr_set_joint_angle");
+        chain.push((
+            node["fields"]["JOINT_ID"].as_str().expect("joint id").to_string(),
+            node["fields"]["ANGLE"].as_f64().expect("angle"),
+        ));
+        let next = node["next"]["block"].clone();
+        if next.is_null() {
+            return chain;
+        }
+        node = next;
+    }
+}
+
+fn generated(turn: f64) -> ChallengeDefinition {
+    CapTrimGenerator::new(prototype())
+        .generate(7, &params(2.0, 1.0, 0.5, turn))
+        .expect("generates")
+}
+
+#[test]
+fn a_derived_starter_aims_at_the_sector_the_item_trims() {
+    // The generator measures a voxel's azimuth as atan2(dz, dx) and centres the
+    // trimmed sector at `region_turn · 2π`; `rotation_y` makes the arm's azimuth
+    // `−baseYaw`. So the sweep is `−region_turn · 360°` whenever the joint can
+    // reach it — which is the whole point of deriving rather than copying.
+    for (turn, expected) in [(0.0, 0.0), (0.1, -36.0), (0.9, 36.0)] {
+        let challenge = generated(turn);
+        let workspace = challenge
+            .starter_workspace
+            .as_ref()
+            .unwrap_or_else(|| panic!("turn {turn} ships a starter"));
+        let blocks = starter_blocks(workspace);
+
+        let (joint, angle) = blocks.last().expect("a sweep block");
+        assert_eq!(joint, "baseYaw", "turn {turn}");
+        assert!(
+            (angle - expected).abs() < 1e-9,
+            "turn {turn}: aimed {angle}, expected {expected}"
+        );
+    }
+}
+
+#[test]
+fn a_starter_for_an_unreachable_sector_gets_as_close_as_the_joint_allows() {
+    // baseYaw travels ±60°, so a sector centred behind the head cannot be aimed
+    // at. Clamping to the nearest reachable heading is what a player would do,
+    // and it is honest — the alternative representations are checked first, so
+    // clamping only happens when none of them fit.
+    let challenge = generated(0.5);
+    let blocks = starter_blocks(
+        challenge
+            .starter_workspace
+            .as_ref()
+            .expect("still ships a starter"),
+    );
+    let (joint, angle) = blocks.last().expect("a sweep block");
+    assert_eq!(joint, "baseYaw");
+    assert_eq!(*angle, -60.0);
+}
+
+#[test]
+fn a_derived_starter_never_halts_on_the_head() {
+    // The property that makes deriving safe at all: whatever is emitted has been
+    // replayed through the executor that will score it. A starter that stopped
+    // on the head the first time a learner pressed Run would be a worse
+    // introduction than the blank canvas it replaced.
+    let generator = CapTrimGenerator::new(prototype());
+    let mut with_starter = 0;
+
+    for seed in 0..60_u64 {
+        let challenge = match generator.generate(seed, &generator.family().sample(seed)) {
+            Ok(challenge) => challenge,
+            Err(_) => continue,
+        };
+        let Some(workspace) = challenge.starter_workspace.clone() else {
+            continue;
+        };
+        with_starter += 1;
+
+        let program = Program {
+            nodes: starter_blocks(&workspace)
+                .into_iter()
+                .enumerate()
+                .map(|(index, (joint_id, angle_deg))| ProgramNode::SetJointAngle {
+                    joint_id,
+                    angle_deg,
+                    source_block_id: format!("b{index}"),
+                })
+                .collect(),
+            source_block_count: 5,
+        };
+
+        let outcome = hcr_sim::replay(&challenge, &program, hcr_sim::ReplayOptions::default())
+            .unwrap_or_else(|error| panic!("seed {seed}: starter is invalid: {error:?}"));
+        assert_eq!(
+            outcome.terminal.reason,
+            TerminalReason::Completed,
+            "seed {seed}: starter halted"
+        );
+    }
+
+    assert!(with_starter >= 55, "only {with_starter}/60 seeds got a starter");
+}

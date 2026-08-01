@@ -41,6 +41,16 @@ pub struct ServiceConfig {
     pub seed: u64,
     /// Sessions untouched for longer than this are evicted.
     pub session_idle_timeout_ms: u64,
+    /// How long a finished round stays readable after anyone last looked at it.
+    pub match_results_retention_ms: u64,
+    /// A lobby nobody starts is dropped after this long untouched.
+    pub match_lobby_idle_timeout_ms: u64,
+    /// Cap on retained submission results.
+    ///
+    /// Bounds the idempotency store, which otherwise grows once per scored
+    /// program for as long as the process runs — and on a public deployment
+    /// anyone can add to it.
+    pub max_retained_submissions: usize,
 }
 
 impl Default for ServiceConfig {
@@ -51,6 +61,11 @@ impl Default for ServiceConfig {
             exposure: ExposureController::default(),
             seed: 0x5EED,
             session_idle_timeout_ms: 30 * 60 * 1000,
+            // Long enough to read a scoreboard and argue about it, short enough
+            // that a public server is not storing every round ever played.
+            match_results_retention_ms: 15 * 60 * 1000,
+            match_lobby_idle_timeout_ms: 30 * 60 * 1000,
+            max_retained_submissions: 20_000,
         }
     }
 }
@@ -73,6 +88,7 @@ pub struct HcrService {
     counter: AtomicU64,
     clock: SharedClock,
     matches: MatchRegistry,
+    usage: Option<Arc<crate::usage::UsageLog>>,
 }
 
 impl HcrService {
@@ -107,6 +123,23 @@ impl HcrService {
             counter: AtomicU64::new(0),
             clock: clock.clone(),
             matches: MatchRegistry::new(clock),
+            usage: None,
+        }
+    }
+
+    /// Attach a usage log.
+    ///
+    /// Off unless a deployment asks for it, so tests and the development server
+    /// write nothing to disk. See [`crate::usage`] for what is recorded.
+    #[must_use]
+    pub fn with_usage_log(mut self, log: Arc<crate::usage::UsageLog>) -> Self {
+        self.usage = Some(log);
+        self
+    }
+
+    fn record(&self, event: crate::usage::UsageEvent) {
+        if let Some(log) = &self.usage {
+            log.record(&event);
         }
     }
 
@@ -175,6 +208,21 @@ impl HcrService {
         &self,
         request: SubmissionCreate,
     ) -> ServiceResult<SubmissionResult> {
+        self.create_submission_for(request, None).await
+    }
+
+    /// Score a program, recording who submitted it.
+    ///
+    /// Separate from [`Self::create_submission`] rather than an added parameter
+    /// so the many callers that have no identity to offer stay unchanged. The
+    /// player is used **only** for the usage log — it grants nothing and is
+    /// never checked, because on a public deployment it is whatever the client
+    /// claimed.
+    pub async fn create_submission_for(
+        &self,
+        request: SubmissionCreate,
+        player_id: Option<&str>,
+    ) -> ServiceResult<SubmissionResult> {
         if let Some(existing) = self.stored_submission(&request.submission_id) {
             return Ok(existing);
         }
@@ -182,6 +230,8 @@ impl HcrService {
         let dto = self
             .catalog
             .get(&request.challenge_id, Some(request.challenge_version))?;
+        // Captured before `request` is partly moved into the result below.
+        let (match_id, session_id) = (request.match_id.clone(), request.session_id.clone());
 
         // The server expands `repeat` itself inside replay; a client-supplied
         // command list is never trusted, which is what gives the 500-command cap
@@ -212,6 +262,13 @@ impl HcrService {
         };
 
         self.store_submission(&result);
+        self.record(crate::usage::UsageEvent::from_submission(
+            self.now(),
+            player_id.map(str::to_owned),
+            &result,
+            match_id,
+            session_id,
+        ));
         Ok(result)
     }
 
@@ -231,8 +288,24 @@ impl HcrService {
 
     fn store_submission(&self, result: &SubmissionResult) {
         if let Ok(mut store) = self.submissions.lock() {
+            // Crude, like the replay cache's, and for the same reason: a full
+            // clear bounds memory without pulling in an LRU. What is lost is
+            // idempotency for submissions older than the cap — a client that
+            // retried one would have it re-scored, and replay is deterministic
+            // so it would get the identical result back. A session that then
+            // referenced an evicted submission gets a clean `ItemRefInvalid`
+            // rather than a wrong score. Both are acceptable; unbounded growth
+            // is not.
+            if store.len() >= self.config.max_retained_submissions {
+                store.clear();
+            }
             store.insert(result.submission_id.clone(), result.clone());
         }
+    }
+
+    /// Number of retained submission results.
+    pub fn retained_submissions(&self) -> usize {
+        self.submissions.lock().map(|s| s.len()).unwrap_or(0)
     }
 
     // -- sessions --------------------------------------------------------
@@ -309,12 +382,27 @@ impl HcrService {
         }
 
         let raw_score = (submission.score.final_score / 100.0).clamp(0.0, 1.0);
+        let challenge_id = submission.challenge_id.clone();
 
-        self.sessions
+        let outcome = self
+            .sessions
             .get(&request.session_id, self.now())
             .await?
             .respond(claims, request.submission_id, raw_score)
-            .await
+            .await?;
+
+        // The ability trajectory: one row per response, so a session can be
+        // replayed offline to check the estimator against its own history.
+        self.record(crate::usage::UsageEvent::SessionResponse {
+            ts: self.now(),
+            session_id: request.session_id.clone(),
+            challenge_id,
+            raw_score: outcome.raw_score,
+            correct: outcome.correct,
+            theta: outcome.theta,
+            standard_error: outcome.standard_error,
+        });
+        Ok(outcome)
     }
 
     /// Close a session and issue its result.
@@ -328,6 +416,26 @@ impl HcrService {
     /// Live session count.
     pub async fn live_sessions(&self) -> usize {
         self.sessions.len().await
+    }
+
+    /// Drop everything nobody is using: idle sessions and finished rounds.
+    ///
+    /// Must be called periodically. Nothing in the service does it on its own —
+    /// [`crate::deploy::serve`] starts the sweeper that does, and a deployment
+    /// that skips it leaks memory for as long as it runs.
+    ///
+    /// Returns `(sessions_evicted, rounds_evicted)`.
+    pub async fn evict_idle(&self) -> (usize, usize) {
+        let sessions = self.evict_idle_sessions().await.len();
+        let rounds = self
+            .matches
+            .evict_idle(
+                self.now(),
+                self.config.match_results_retention_ms,
+                self.config.match_lobby_idle_timeout_ms,
+            )
+            .len();
+        (sessions, rounds)
     }
 
     /// Drop sessions idle beyond the configured timeout.
@@ -368,16 +476,13 @@ impl HcrService {
                 pinned.clone()
             }
             None => {
-                let first = self
-                    .catalog
-                    .list()?
-                    .into_iter()
-                    .next()
-                    .ok_or(ServiceError::BankExhausted)?;
-                let dto = self.catalog.get(&first.id, None)?;
+                // Not `list()[0]`: a listing is ordered for humans, and taking
+                // its head made the item a round ran on an accident of the
+                // alphabet. `pick_for_match` chooses for a reason.
+                let (challenge_id, version) = self.catalog.pick_for_match()?;
                 MatchChallengeRef {
-                    challenge_id: dto.challenge.id.clone(),
-                    version: dto.meta.version,
+                    challenge_id,
+                    version,
                 }
             }
         };
@@ -421,13 +526,33 @@ impl HcrService {
         player_id: &str,
         request: SubmissionCreate,
     ) -> ServiceResult<MatchSubmissionAck> {
-        let result = self.create_submission(request).await?;
+        let result = self.create_submission_for(request, Some(player_id)).await?;
         self.matches.submit(match_id, player_id, &result)
     }
 
     /// Final standings, once the round has closed.
     pub fn match_results(&self, match_id: &str) -> ServiceResult<MatchResults> {
-        self.matches.results(match_id)
+        let results = self.matches.results(match_id)?;
+        // Recorded on first publication only: `results()` refuses until the
+        // round closes, and afterwards the room is evicted rather than replayed,
+        // so repeated reads of the same standings are cheap duplicates at worst.
+        self.record(crate::usage::UsageEvent::MatchResults {
+            ts: self.now(),
+            match_id: results.match_id.clone(),
+            challenge_id: results.challenge_id.clone(),
+            challenge_version: results.challenge_version,
+            players: results.rows.len(),
+            submitted: results
+                .rows
+                .iter()
+                .filter(|row| row.submission_id.is_some())
+                .count(),
+            top_completion: results
+                .rows
+                .first()
+                .map_or(0.0, |row| row.completion_score),
+        });
+        Ok(results)
     }
 
     /// Abandon a round.

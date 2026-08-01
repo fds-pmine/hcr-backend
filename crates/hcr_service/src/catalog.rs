@@ -100,27 +100,86 @@ impl CatalogStore {
             })
     }
 
-    /// Summaries of the latest version of every challenge, in stable id order.
+    /// Summaries of the latest version of every challenge.
+    ///
+    /// # Ordering is part of the contract
+    ///
+    /// Hand-authored challenges lead, then generated ones, each group by id.
+    /// Both properties are load-bearing:
+    ///
+    /// * **Reproducible.** `HashMap` iteration order is unspecified, so without
+    ///   a sort two identical catalogs would list differently.
+    /// * **Meaningful.** A client with no other signal opens the *first* entry,
+    ///   and a plain id sort made that an accident of the alphabet — generated
+    ///   ids begin `cap-trim-…`, so a provisional machine-made item outranked
+    ///   the authored one it was generated from. A listing is a menu; the
+    ///   authored, calibrated challenges are the ones to meet first.
+    ///
+    /// A caller that needs a *specific* item must still name it. This ordering
+    /// makes "the first one" a defensible default, not a substitute for asking.
     pub fn list(&self) -> ServiceResult<Vec<ChallengeSummary>> {
         let inner = self
             .inner
             .read()
             .map_err(|_| ServiceError::Internal("catalog lock poisoned"))?;
 
-        let mut summaries: Vec<ChallengeSummary> = inner
+        let mut rows: Vec<(bool, ChallengeSummary)> = inner
             .latest
             .iter()
             .filter_map(|(id, version)| inner.versions.get(&(id.clone(), *version)))
-            .map(|dto| ChallengeSummary {
-                id: dto.challenge.id.clone(),
-                name: dto.challenge.name.clone(),
-                description: dto.challenge.description.clone(),
+            .map(|dto| {
+                (
+                    dto.meta.generator.is_some(),
+                    ChallengeSummary {
+                        id: dto.challenge.id.clone(),
+                        name: dto.challenge.name.clone(),
+                        description: dto.challenge.description.clone(),
+                    },
+                )
             })
             .collect();
 
-        // HashMap order is not specified; sort so listings are reproducible.
-        summaries.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(summaries)
+        rows.sort_by(|(a_generated, a), (b_generated, b)| {
+            a_generated.cmp(b_generated).then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(rows.into_iter().map(|(_, summary)| summary).collect())
+    }
+
+    /// Pick an item to run a competitive round on.
+    ///
+    /// `Provisional` items are deliberately **allowed**: a round ranks players
+    /// against each other on an identical item, so the ranking is valid whatever
+    /// the item's `b` turns out to be. That is the contract's own position
+    /// (`CalibrationState::Provisional`), and it is why the `07-CALIBRATION.md`
+    /// §8 objection to uncalibrated items does not carry over — that objection
+    /// is about *measuring* an ability, which a round does not do.
+    ///
+    /// `Retired` items are refused. An item withdrawn as drifted or pathological
+    /// should not be the thing that decides who won.
+    ///
+    /// Beyond that this takes the first entry in [`Self::list`]'s order, so an
+    /// unpinned round lands on an authored, human-checked challenge rather than
+    /// on whichever generated id happened to sort first.
+    pub fn pick_for_match(&self) -> ServiceResult<(String, u32)> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| ServiceError::Internal("catalog lock poisoned"))?;
+
+        inner
+            .latest
+            .iter()
+            .filter_map(|(id, version)| inner.versions.get(&(id.clone(), *version)))
+            .filter(|dto| dto.meta.calibration.servable())
+            .min_by(|a, b| {
+                a.meta
+                    .generator
+                    .is_some()
+                    .cmp(&b.meta.generator.is_some())
+                    .then_with(|| a.challenge.id.cmp(&b.challenge.id))
+            })
+            .map(|dto| (dto.challenge.id.clone(), dto.meta.version))
+            .ok_or(ServiceError::BankExhausted)
     }
 
     /// Build a bank snapshot over the latest version of every challenge.

@@ -1,0 +1,22 @@
+# Rotation for the usage log.
+#
+#   sudo install -m0644 deploy/hcr-usage.logrotate /etc/logrotate.d/hcr-usage
+#
+# The service has no rotation of its own on purpose: every row carries an epoch
+# `ts`, so bucketing by day is a property of the data rather than of the
+# filename, and logrotate is already on the box and better at this.
+#
+# `copytruncate` because hcr-server holds the file open for the life of the
+# process. Without it, rotation would rename the file and the server would keep
+# writing to the renamed one — the classic silent-loss failure.
+
+/var/lib/hcr/usage.jsonl {
+	daily
+	rotate 90
+	compress
+	delaycompress
+	missingok
+	notifempty
+	copytruncate
+	create 0640 hcr hcr
+}

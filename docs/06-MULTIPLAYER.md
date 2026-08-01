@@ -91,6 +91,11 @@ for watching the final attempt.
 Residual, accepted disadvantage: a machine so slow that the Blockly editor itself lags. Nothing in the
 protocol fixes that.
 
+**Built.** `src/features/simulation/headlessRun.ts`, wired to the leading button in the control dock. It
+uses a fixed 16 ms step rather than a frame delta, so the result of a Test does not depend on how fast the
+machine drawing it happens to be, and it is bounded by a wall-clock budget so a pathological program cannot
+freeze the tab. Submitting runs the same evaluation first.
+
 ## 5. Clock synchronization
 
 Clients must render a countdown that agrees with the server's deadline.
@@ -162,7 +167,32 @@ Results carry, per player: `completionScore`, `finalScore`, `metrics`, `submissi
 and `rank`. Publishing `serverReceivedAt` makes the deadline decision auditable after the fact, which is
 what turns a disputed round into a checkable claim.
 
-## 10. Relationship to CAT
+## 10. The frontend
+
+Implemented against the HTTP binding, since MQTT is still landing. Every call goes through one interface,
+`MatchProvider` (`src/services/contracts.ts`), so replacing polling with an MQTT subscription later is one
+implementation rather than a UI rewrite.
+
+| File | Role |
+| --- | --- |
+| `src/services/http/HttpMatchProvider.ts` | The real thing. Identity in `X-HCR-Player`, clock sync per §5. |
+| `src/services/local/LocalMatchProvider.ts` | Offline **practice** against scripted bots — see the warning below. |
+| `src/features/match/useMatch.ts` | Polls state, fetches the challenge at T0 and results at close. |
+| `src/features/match/MatchSetup.tsx` | Host or join, round length. |
+| `src/features/match/MatchLobby.tsx` | Room code, roster, the §3 rules stated to the player. |
+| `src/features/match/MatchHud.tsx` | Countdown, who has submitted, accept/refuse — and no score. |
+| `src/features/match/MatchScoreboard.tsx` | Standings at close, with the §1 metric named. |
+
+The round is played in the ordinary workbench with the HUD over it: same blocks, same engine, same scoring,
+so solo practice transfers to a round exactly.
+
+> **The offline provider is not multiplayer.** With no `VITE_HCR_API_BASE_URL` there is no server, so
+> nothing is replayed: the score recorded is the one the browser computed, and the opponents are generated.
+> It exists because a versus mode that shows an error until somebody runs a Rust binary is a versus mode
+> nobody sees. `MatchProvider.kind` is `'practice'` there and `'online'` otherwise, and the UI says which it
+> is on the menu, in the lobby and on the scoreboard. A round that decides anything must be `'online'`.
+
+## 11. Relationship to CAT
 
 Matches and adaptive sessions are **different modes over the same machinery**, and should not be conflated:
 

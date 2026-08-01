@@ -79,12 +79,19 @@ pub const ROUTES: &[(&str, &str)] = &[
 /// deployment this is set by whatever validates the bearer token.
 pub const PLAYER_HEADER: &str = "x-hcr-player";
 
+/// Header carrying the player's display name.
+///
+/// Purely cosmetic — it names a row on the leaderboard and nothing else — so
+/// unlike [`PLAYER_HEADER`] a client may choose it. See
+/// [`crate::binding::HttpCall::display_name`].
+pub const PLAYER_NAME_HEADER: &str = "x-hcr-player-name";
+
 /// Serve one request.
 ///
 /// The single function a hotaru endpoint needs to call.
 ///
 /// `cors_allow_origin` is for browsers on a different origin — a Vite dev server
-/// on `:5173` talking to this service on `:8080`. Leave it `None` in production:
+/// on `:5173` talking to this service on `:18623`. Leave it `None` in production:
 /// the browser path there is MQTT-over-WebSocket, and a permissive
 /// `Access-Control-Allow-Origin` on a scoring API is not something to ship by
 /// accident.
@@ -122,6 +129,7 @@ where
 
     let path = ctx.path();
     let player_id = ctx.header_str(PLAYER_HEADER).map(str::to_owned);
+    let display_name = ctx.header_str(PLAYER_NAME_HEADER).map(str::to_owned);
     let body = take_body(ctx);
 
     let reply = router
@@ -130,6 +138,7 @@ where
             path,
             body,
             player_id,
+            display_name,
         })
         .await;
 
@@ -148,7 +157,7 @@ fn with_cors(response: HttpResponse, allow_origin: Option<&str>) -> HttpResponse
             .add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             .add_header(
                 "Access-Control-Allow-Headers",
-                "Content-Type, Authorization, X-HCR-Player",
+                "Content-Type, Authorization, X-HCR-Player, X-HCR-Player-Name",
             ),
     }
 }

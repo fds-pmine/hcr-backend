@@ -14,10 +14,11 @@ authoritative replay, an adaptive session and a competitive round.
 """
 
 import json
+import time
 import urllib.error
 import urllib.request
 
-BASE = "http://localhost:8080/api/v1"
+BASE = "http://localhost:18623/api/v1"
 
 # The challenge's shipped starter workspace, as Program IR. The frontend
 # compiles this from Blockly; here it is written out directly.
@@ -143,8 +144,9 @@ def adaptive():
 
 def round_():
     rule("4  COMPETITIVE ROUND — same item for all, server clock decides")
+    # Four seconds so the demo can wait it out. A real round is minutes.
     _, match = call("POST", "/matches", {
-        "durationMs": 60_000,
+        "durationMs": 4_000,
         "rankBy": "completion",
         "maxPlayers": 4,
         "minSubmitIntervalMs": 0,
@@ -156,26 +158,51 @@ def round_():
     status, _ = call("GET", f"/matches/{match_id}/challenge")
     print(f"  challenge during lobby → HTTP {status} (withheld: no head start)")
 
-    for player in ("alice", "bob"):
-        call("POST", f"/matches/{match_id}/join", {}, {"X-HCR-Player": player})
+    roster = (("u-alice", "Alice"), ("u-bob", "Bob"), ("u-carol", "Carol"))
+    for player_id, name in roster:
+        _, state = call("POST", f"/matches/{match_id}/join", {},
+                        {"X-HCR-Player": player_id, "X-HCR-Player-Name": name})
+    print("  joined: " + ", ".join(f"{p['displayName']}({p['playerId']})"
+                                   for p in state["players"]))
+    print("    ↑ the name is cosmetic; the id is what the server acts on")
+
     started = call("POST", f"/matches/{match_id}/start", {})[1]
-    print(f"  started: closes_at−opens_at = {started['closesAt'] - started['opensAt']}ms, "
-          f"{len(started['players'])} players")
+    print(f"  started: closes_at−opens_at = {started['closesAt'] - started['opensAt']}ms")
 
     status, _ = call("GET", f"/matches/{match_id}/challenge")
-    print(f"  challenge after start  → HTTP {status} (revealed)")
+    print(f"  challenge after start  → HTTP {status} (revealed to everyone at once)")
 
-    for player, program, sid in (("alice", STARTER, "m-alice"), ("bob", COLLIDING, "m-bob")):
+    for player_id, program, sid in (("u-alice", STARTER, "m-alice"),
+                                    ("u-bob", COLLIDING, "m-bob")):
         _, ack = call("POST", f"/matches/{match_id}/submissions", {
-            "submissionId": sid, "challengeId": "neat-short-cap",
+            "matchId": match_id, "submissionId": sid, "challengeId": "neat-short-cap",
             "challengeVersion": 1, "program": program,
-        }, {"X-HCR-Player": player})
+        }, {"X-HCR-Player": player_id})
         # The ack deliberately carries no score.
-        print(f"  {player} submits → accepted={ack['accepted']}, keys={sorted(ack.keys())}")
+        print(f"  {player_id} submits → accepted={ack['accepted']}, keys={sorted(ack.keys())}")
 
-    status, _ = call("GET", f"/matches/{match_id}/results")
-    print(f"  results while running  → HTTP {status} (hidden until close)")
-    print("  (a real round closes on the server clock; tests drive that with ManualClock)")
+    status, body = call("GET", f"/matches/{match_id}/results")
+    print(f"  results while running  → HTTP {status} {body['error']['code']} "
+          f"— \"{body['error']['message']}\"")
+
+    print("  …waiting out the clock…")
+    time.sleep(4.5)
+    call("GET", f"/matches/{match_id}")          # settles the phase on the server clock
+
+    _, results = call("GET", f"/matches/{match_id}/results")
+    print(f"  FINAL STANDINGS (ranked by {results['rankBy']})")
+    for row in results["rows"]:
+        note = "" if row.get("submissionId") else "   (never submitted)"
+        print(f"    #{row['rank']}  {row['displayName']:<7} "
+              f"completion {row['completionScore']:6.2f}   final {row['finalScore']:6.2f}"
+              f"{note}")
+
+    _, late = call("POST", f"/matches/{match_id}/submissions", {
+        "matchId": match_id, "submissionId": "m-late", "challengeId": "neat-short-cap",
+        "challengeVersion": 1, "program": STARTER,
+    }, {"X-HCR-Player": "u-carol"})
+    print(f"  submitting after the deadline → accepted={late['accepted']} "
+          f"({late['rejectedReason']})")
 
 
 def main():

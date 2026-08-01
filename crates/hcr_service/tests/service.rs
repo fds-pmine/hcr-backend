@@ -33,6 +33,7 @@ fn service_with(challenges: Vec<ChallengeDefinitionDto>) -> HcrService {
             exposure: ExposureController::unlimited(),
             seed: 99,
             session_idle_timeout_ms: 30 * 60 * 1000,
+            ..ServiceConfig::default()
         },
     )
 }
@@ -632,4 +633,186 @@ async fn sessions_are_independent() {
         service.session_snapshot(&b).await.unwrap().response_count,
         0
     );
+}
+
+// ---------------------------------------------------------------------------
+// Catalog ordering and round item selection
+// ---------------------------------------------------------------------------
+
+/// A generated sibling of `common::challenge_dto`, tagged with provenance.
+fn generated_dto(id: &str, calibration: CalibrationState) -> ChallengeDefinitionDto {
+    let mut dto = common::challenge(id, 1, 0.0);
+    dto.meta.calibration = calibration;
+    dto.meta.generator = Some(GeneratorProvenance {
+        family_id: "cap-trim".into(),
+        version: "1".into(),
+        seed: 7,
+        params: Default::default(),
+    });
+    dto
+}
+
+#[test]
+fn authored_challenges_lead_the_listing_whatever_the_alphabet_says() {
+    // Generated ids begin "cap-trim-", so a plain id sort put a machine-made
+    // item ahead of the authored challenge it was generated from — and every
+    // client with no other signal opens the first entry.
+    let catalog = CatalogStore::new();
+    catalog.insert(generated_dto("cap-trim-aaa", CalibrationState::Provisional)).unwrap();
+    catalog.insert(generated_dto("cap-trim-bbb", CalibrationState::Online)).unwrap();
+    catalog.insert(common::challenge("neat-short-cap", 1, 0.0)).unwrap();
+
+    let ids: Vec<String> = catalog.list().unwrap().into_iter().map(|s| s.id).collect();
+    assert_eq!(ids, ["neat-short-cap", "cap-trim-aaa", "cap-trim-bbb"]);
+}
+
+#[test]
+fn an_unpinned_round_lands_on_an_authored_challenge() {
+    let catalog = CatalogStore::new();
+    catalog.insert(generated_dto("cap-trim-aaa", CalibrationState::Calibrated)).unwrap();
+    catalog.insert(common::challenge("neat-short-cap", 1, 0.0)).unwrap();
+
+    assert_eq!(
+        catalog.pick_for_match().unwrap(),
+        ("neat-short-cap".to_string(), 1)
+    );
+}
+
+#[test]
+fn a_round_may_use_a_provisional_item_but_never_a_retired_one() {
+    // Provisional is fine: every player faces the identical item, so the
+    // ranking holds whatever the item's difficulty turns out to be. Retired is
+    // not — an item withdrawn as pathological must not decide who won.
+    let catalog = CatalogStore::new();
+    catalog.insert(generated_dto("cap-trim-aaa", CalibrationState::Provisional)).unwrap();
+    assert_eq!(
+        catalog.pick_for_match().unwrap(),
+        ("cap-trim-aaa".to_string(), 1)
+    );
+
+    let retired = CatalogStore::new();
+    retired.insert(generated_dto("cap-trim-bbb", CalibrationState::Retired)).unwrap();
+    assert!(matches!(
+        retired.pick_for_match(),
+        Err(ServiceError::BankExhausted)
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Usage collection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn usage_records_the_calibration_datum_and_no_display_name() {
+    let dir = std::env::temp_dir().join(format!("hcr-usage-{}", std::process::id()));
+    let path = dir.join("usage.jsonl");
+    let _ = std::fs::remove_file(&path);
+
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"usage-key"),
+        ServiceConfig::default(),
+    )
+    .with_usage_log(Arc::new(UsageLog::open(&path).expect("open log")));
+
+    service
+        .create_submission_for(
+            submission("sub-1", "easy", 1, safe_program()),
+            Some("u-8f21"),
+        )
+        .await
+        .unwrap();
+
+    let line = std::fs::read_to_string(&path).expect("log written");
+    let event: serde_json::Value = serde_json::from_str(line.trim()).expect("one json line");
+
+    // One person, one item, one outcome — an IRT datum, which is the whole
+    // reason this exists rather than being bolted-on analytics.
+    assert_eq!(event["kind"], "submission");
+    assert_eq!(event["playerId"], "u-8f21");
+    assert_eq!(event["challengeId"], "easy");
+    assert_eq!(event["challengeVersion"], 1);
+    assert!(event["completionScore"].is_number());
+
+    // Free text a player typed is where a real name or an email would end up,
+    // and grouping by playerId answers the same questions.
+    assert!(event.get("displayName").is_none(), "{event}");
+    // A learner's program is their work; the shape metrics carry the analysis
+    // value without archiving it.
+    assert!(event.get("program").is_none(), "{event}");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn usage_collection_is_off_unless_a_deployment_asks_for_it() {
+    // A default that collected would make every test and every dev run write to
+    // disk, and would make collection something inherited rather than decided.
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"usage-key"),
+        ServiceConfig::default(),
+    );
+
+    // No log attached: scoring still works and nothing is written anywhere.
+    let result = service
+        .create_submission_for(submission("sub-1", "easy", 1, safe_program()), Some("u-1"))
+        .await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn the_idempotency_store_is_bounded() {
+    // It grows once per scored program and never shrank. On a public server
+    // that is a leak with a public write path.
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"bound-key"),
+        ServiceConfig {
+            max_retained_submissions: 8,
+            ..ServiceConfig::default()
+        },
+    );
+
+    for index in 0..25 {
+        service
+            .create_submission(submission(
+                &format!("sub-{index}"),
+                "easy",
+                1,
+                safe_program(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    assert!(
+        service.retained_submissions() <= 8,
+        "retained {}",
+        service.retained_submissions()
+    );
+
+    // Re-scoring an evicted submission is deterministic, so a client that
+    // retried past the cap still gets the same answer — idempotency degrades to
+    // recomputation, not to a different result.
+    let again = service
+        .create_submission(submission("sub-0", "easy", 1, safe_program()))
+        .await
+        .unwrap();
+    assert_eq!(again.score.completion_score, {
+        let fresh = service
+            .create_submission(submission("sub-fresh", "easy", 1, safe_program()))
+            .await
+            .unwrap();
+        fresh.score.completion_score
+    });
 }

@@ -71,7 +71,7 @@ non-browser tooling (curl, CI, load tests) has a path in. It carries envelope me
 | `payload` | request/response body |
 
 ```text
-GET  /api/v1/challenges                → ChallengeSummary[]
+GET  /api/v1/challenges                → ChallengeSummary[]   (ordered; see below)
 GET  /api/v1/challenges/{id}           → ChallengeDefinitionDto
 POST /api/v1/score                     → ScoreResult          (ScoreProvider parity)
 POST /api/v1/submissions               → SubmissionAccepted | SubmissionResult
@@ -80,7 +80,34 @@ POST /api/v1/sessions                  → SessionSnapshot
 POST /api/v1/sessions/{id}/next        → NextItem
 POST /api/v1/sessions/{id}/responses   → ResponseOutcome
 POST /api/v1/sessions/{id}/finalize    → SessionResultDto
+
+GET  /api/v1/time                      → TimeSync             (clock offset, §06 §5)
+POST /api/v1/matches                   → MatchState
+GET  /api/v1/matches/{id}              → MatchState
+GET  /api/v1/matches/{id}/challenge    → ChallengeDefinitionDto  (409 before T0)
+POST /api/v1/matches/{id}/join         → MatchState
+POST /api/v1/matches/{id}/start        → MatchState
+POST /api/v1/matches/{id}/submissions  → MatchSubmissionAck      (never a score)
+GET  /api/v1/matches/{id}/results      → MatchResults            (409 until close)
 ```
+
+Round endpoints carry two more headers:
+
+| Header | Meaning |
+| --- | --- |
+| `X-HCR-Player` | Authenticated identity. **Written by the auth layer**, which overwrites whatever the client sent. It decides what a caller may *do*, so a client-chosen value would let anyone act as anyone. |
+| `X-HCR-Player-Name` | Display name for the roster and leaderboard. Cosmetic, so the client may choose it. Falls back to the player id when absent. |
+
+`examples/serve` has no auth layer and therefore trusts `X-HCR-Player` as sent. That is a property of a
+development server, not of the binding.
+
+**Listing order is normative.** `GET /api/v1/challenges` returns hand-authored challenges first, then
+generated ones, each group by id. Reproducibility is only half the reason: a client with no other signal
+opens the *first* entry, and a plain id sort made that an accident of the alphabet — generated ids begin
+`cap-trim-…`, so a provisional machine-made item outranked the authored challenge it was generated from.
+A client that needs a specific item must still name it; this ordering makes "the first one" a defensible
+default, not a substitute for asking. An unpinned competitive round applies the same rule, additionally
+skipping `retired` items (`CatalogStore::pick_for_match`).
 
 These are the endpoints already reserved at `docs/HCR_Simulator_SPEC_v0.3.md:528-531`, kept identical in
 shape so the spec does not need rewriting.
@@ -267,6 +294,7 @@ Over MQTT: reply with `kind: "error"` and `corr` set. Over HTTP: non-2xx with `{
 | `WEIGHTS_INVALID` | 422 | no |
 | `ITEM_REF_INVALID` | 409 | no |
 | `SESSION_NOT_FOUND` / `SESSION_TERMINATED` | 404 / 409 | no |
+| `MATCH_NOT_READY` | 409 | yes (later) |
 | `BANK_EXHAUSTED` | 409 | no |
 | `DEVICE_OFFLINE` / `DEVICE_BUSY` | 409 | yes |
 | `REPLAY_TIMEOUT` | 504 | yes |
@@ -275,6 +303,11 @@ Over MQTT: reply with `kind: "error"` and `corr` set. Over HTTP: non-2xx with `{
 
 `PROGRAM_INVALID` carries `field` so the frontend can keep its existing behaviour of highlighting the
 offending block (SPEC v0.3 §13.2) — the compiler already tracks `sourceBlockId` on every command.
+
+`MATCH_NOT_READY` covers the two refusals that are the *design* of a round rather than a fault: the
+challenge during the lobby, and results while the round is still running. Both mean "try again later, not
+differently", which is why they are not `ITEM_REF_INVALID` (nothing was forged) or `SESSION_TERMINATED`
+(nothing has ended). Its `message` is written to be shown to a waiting player.
 
 ## 8. Idempotency, ordering, delivery
 

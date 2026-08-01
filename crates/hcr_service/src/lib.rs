@@ -32,6 +32,8 @@
 
 pub mod binding;
 #[cfg(feature = "hotaru")]
+pub mod deploy;
+#[cfg(feature = "hotaru")]
 pub mod hotaru_binding;
 pub mod catalog;
 pub mod clock;
@@ -39,10 +41,16 @@ pub mod error;
 pub mod itemref;
 pub mod replay;
 pub mod rounds;
+pub mod seed;
 pub mod service;
 pub mod session;
+pub mod usage;
 
 pub use binding::{HttpCall, HttpReply, Method, Router, status_for};
+#[cfg(feature = "hotaru")]
+pub use deploy::{
+    ConfigError, DEFAULT_BINDING, MIN_SIGNING_KEY_LEN, ServerConfig, check_binding, serve,
+};
 pub use catalog::CatalogStore;
 pub use clock::{Clock, ManualClock, SharedClock, SystemClock, system_clock};
 pub use rounds::MatchRegistry;
@@ -51,3 +59,4 @@ pub use itemref::{ItemRefClaims, ItemRefSigner};
 pub use replay::{ENGINE_VERSION, ReplayPool, diverged, program_hash};
 pub use service::{HcrService, ServiceConfig};
 pub use session::{SessionHandle, SessionRegistry, SessionSpec};
+pub use usage::{UsageEvent, UsageLog};

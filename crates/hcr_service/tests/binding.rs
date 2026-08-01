@@ -30,6 +30,7 @@ fn router() -> Router {
             exposure: ExposureController::unlimited(),
             seed: 5,
             session_idle_timeout_ms: 60_000,
+            ..ServiceConfig::default()
         },
     )))
 }
@@ -177,6 +178,7 @@ async fn a_malformed_body_is_422_not_500() {
             path: "/api/v1/submissions".into(),
             body: b"{ not json".to_vec(),
             player_id: None,
+            display_name: None,
         })
         .await;
 
@@ -310,6 +312,79 @@ async fn a_round_can_be_created_joined_and_started_over_http() {
             .status,
         200
     );
+}
+
+#[tokio::test]
+async fn a_round_that_is_not_there_yet_says_so_in_its_own_code() {
+    // Neither refusal is a fault: the caller should retry later, not
+    // differently. Reporting them as a forged reference or a terminated session
+    // would be misleading in a message a waiting player actually reads.
+    let router = router();
+    let created = router
+        .dispatch(HttpCall::post("/api/v1/matches", MatchConfig::default()))
+        .await;
+    let match_id = created.json::<MatchState>().expect("state").match_id;
+
+    let early = router
+        .dispatch(HttpCall::get(format!("/api/v1/matches/{match_id}/challenge")))
+        .await;
+    assert_eq!(early.status, 409);
+    assert!(early.text().contains("MATCH_NOT_READY"), "{}", early.text());
+    assert!(early.text().contains("revealed when the round starts"));
+
+    router
+        .dispatch(
+            HttpCall::post(format!("/api/v1/matches/{match_id}/join"), ()).as_player("alice"),
+        )
+        .await;
+    router
+        .dispatch(HttpCall::post(format!("/api/v1/matches/{match_id}/start"), ()))
+        .await;
+
+    let running = router
+        .dispatch(HttpCall::get(format!("/api/v1/matches/{match_id}/results")))
+        .await;
+    assert_eq!(running.status, 409);
+    assert!(running.text().contains("MATCH_NOT_READY"));
+    assert!(running.text().contains("published when the round closes"));
+}
+
+#[tokio::test]
+async fn a_display_name_labels_the_roster_without_becoming_the_identity() {
+    let router = router();
+    let created = router
+        .dispatch(HttpCall::post("/api/v1/matches", MatchConfig::default()))
+        .await;
+    let match_id = created.json::<MatchState>().expect("state").match_id;
+
+    let joined = router
+        .dispatch(
+            HttpCall::post(format!("/api/v1/matches/{match_id}/join"), ())
+                .as_player_named("u-8f21", "Alice"),
+        )
+        .await;
+
+    let state: MatchState = joined.json().expect("state");
+    let player = state.players.first().expect("one participant");
+    // The label is what other players read; the id is what the server acts on.
+    assert_eq!(player.display_name, "Alice");
+    assert_eq!(player.player_id, "u-8f21");
+}
+
+#[tokio::test]
+async fn an_absent_display_name_falls_back_to_the_player_id() {
+    let router = router();
+    let created = router
+        .dispatch(HttpCall::post("/api/v1/matches", MatchConfig::default()))
+        .await;
+    let match_id = created.json::<MatchState>().expect("state").match_id;
+
+    let joined = router
+        .dispatch(HttpCall::post(format!("/api/v1/matches/{match_id}/join"), ()).as_player("bob"))
+        .await;
+
+    let state: MatchState = joined.json().expect("state");
+    assert_eq!(state.players[0].display_name, "bob");
 }
 
 #[tokio::test]
