@@ -9,23 +9,25 @@
  * The TypeScript engine is the incumbent definition of correct; this file never
  * encodes an expectation of its own.
  *
- * Run:
- *   npx vitest run --config hcr-backend/tools/vectors.config.ts
+ * Run from the frontend package, which is where the toolchain lives:
+ *
+ *   cd HCR_Simulator_Frontend && npm run vectors
  */
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { it } from 'vitest';
 
-import { defaultChallengeDefinition } from '../../src/data/challenges/defaultChallenge';
-import { expandProgram } from '../../src/features/blockly/programCompiler';
+import { defaultChallengeDefinition } from '../../HCR_Simulator_Frontend/src/data/challenges/defaultChallenge';
+import { expandProgram } from '../../HCR_Simulator_Frontend/src/features/blockly/programCompiler';
 import type {
   Program,
   ProgramNode,
-} from '../../src/features/blockly/programTypes';
-import { SimulationEngine } from '../../src/features/simulation/SimulationEngine';
-import { LocalChallengeProvider } from '../../src/services/local/LocalChallengeProvider';
-import { LocalScoreProvider } from '../../src/services/local/LocalScoreProvider';
+} from '../../HCR_Simulator_Frontend/src/features/blockly/programTypes';
+import { SimulationEngine } from '../../HCR_Simulator_Frontend/src/features/simulation/SimulationEngine';
+import { LocalChallengeProvider } from '../../HCR_Simulator_Frontend/src/services/local/LocalChallengeProvider';
+import { LocalScoreProvider } from '../../HCR_Simulator_Frontend/src/services/local/LocalScoreProvider';
 
 /** Must equal `hcr_contract::SIM_TICK_MS` so both engines advance identically. */
 const TICK_MS = 5;
@@ -33,9 +35,12 @@ const TICK_MS = 5;
 /** Guard against a program that never terminates. */
 const MAX_TICKS = 2_000_000;
 
+// Relative to this file, not to `process.cwd()`. The generator is invoked
+// through a config that lives in the frontend package (that is where
+// `node_modules` is), so the working directory is not something it can assume.
 const OUTPUT = resolve(
-  process.cwd(),
-  'hcr-backend/crates/hcr_sim/tests/fixtures/vectors.json',
+  dirname(fileURLToPath(import.meta.url)),
+  '../crates/hcr_sim/tests/fixtures/vectors.json',
 );
 
 function setAngle(jointId: string, angleDeg: number, id: string): ProgramNode {

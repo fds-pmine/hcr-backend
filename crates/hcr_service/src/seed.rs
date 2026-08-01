@@ -18,7 +18,7 @@ use hcr_qbank::{CapTrimGenerator, ChallengeGenerator, DifficultyModel};
 use crate::CatalogStore;
 
 /// The shipped challenge, lifted from the conformance fixture so the server
-/// runs against the *real* hairstyle — 241 initial voxels, 215 target — rather
+/// runs against the *real* hairstyle — 241 initial voxels, 229 target — rather
 /// than a toy. The fixture is generated from the TypeScript engine, so this is
 /// byte for byte the challenge the frontend ships.
 const VECTORS: &str = include_str!("../../hcr_sim/tests/fixtures/vectors.json");

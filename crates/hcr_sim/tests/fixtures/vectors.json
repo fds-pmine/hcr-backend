@@ -3,11 +3,11 @@
   "engine": "typescript",
   "tickMs": 5,
   "initialVoxelCount": 241,
-  "targetVoxelCount": 215,
+  "targetVoxelCount": 229,
   "challenge": {
     "id": "neat-short-cap",
     "name": "Neat Short Haircut",
-    "description": "Use the five-joint robot arm to safely remove the thick cap hairstyle’s outer voxels, avoid contact between the mechanism and the head, and preserve as much of the symmetric neat crop target as possible.",
+    "description": "Twelve voxels on the crown have to come off, and nothing else. Lift the tool clear of the head first — the arm cannot swing across at rest — then sweep Base Yaw over the crown. One pass gets most of it; the last patch sits at a different height. Finish the Lessons if you want this broken down step by step.",
     "robotConfig": {
       "joints": [
         {
@@ -1306,7 +1306,7 @@
     },
     "targetHair": {
       "id": "neat-short-cap",
-      "name": "Symmetric Neat Crop",
+      "name": "Neat Crown Trim",
       "voxels": [
         {
           "x": -4,
@@ -1564,21 +1564,6 @@
           "z": 2
         },
         {
-          "x": -3,
-          "y": 4,
-          "z": -1
-        },
-        {
-          "x": -3,
-          "y": 4,
-          "z": 0
-        },
-        {
-          "x": -3,
-          "y": 4,
-          "z": 1
-        },
-        {
           "x": -2,
           "y": -2,
           "z": -3
@@ -1645,11 +1630,6 @@
         },
         {
           "x": -2,
-          "y": 1,
-          "z": 4
-        },
-        {
-          "x": -2,
           "y": 2,
           "z": -3
         },
@@ -1677,46 +1657,6 @@
           "x": -2,
           "y": 3,
           "z": 3
-        },
-        {
-          "x": -2,
-          "y": 4,
-          "z": -2
-        },
-        {
-          "x": -2,
-          "y": 4,
-          "z": -1
-        },
-        {
-          "x": -2,
-          "y": 4,
-          "z": 0
-        },
-        {
-          "x": -2,
-          "y": 4,
-          "z": 1
-        },
-        {
-          "x": -2,
-          "y": 4,
-          "z": 2
-        },
-        {
-          "x": -2,
-          "y": 5,
-          "z": -1
-        },
-        {
-          "x": -2,
-          "y": 5,
-          "z": 0
-        },
-        {
-          "x": -2,
-          "y": 5,
-          "z": 1
         },
         {
           "x": -1,
@@ -1885,6 +1825,26 @@
         },
         {
           "x": 0,
+          "y": 1,
+          "z": -4
+        },
+        {
+          "x": 0,
+          "y": 1,
+          "z": 4
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "z": -4
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "z": 4
+        },
+        {
+          "x": 0,
           "y": 3,
           "z": -4
         },
@@ -1990,6 +1950,36 @@
         },
         {
           "x": 1,
+          "y": 1,
+          "z": -4
+        },
+        {
+          "x": 1,
+          "y": 1,
+          "z": 4
+        },
+        {
+          "x": 1,
+          "y": 2,
+          "z": -4
+        },
+        {
+          "x": 1,
+          "y": 2,
+          "z": -3
+        },
+        {
+          "x": 1,
+          "y": 2,
+          "z": 3
+        },
+        {
+          "x": 1,
+          "y": 2,
+          "z": 4
+        },
+        {
+          "x": 1,
           "y": 3,
           "z": -3
         },
@@ -2105,6 +2095,36 @@
         },
         {
           "x": 2,
+          "y": 1,
+          "z": -4
+        },
+        {
+          "x": 2,
+          "y": 1,
+          "z": -3
+        },
+        {
+          "x": 2,
+          "y": 1,
+          "z": 3
+        },
+        {
+          "x": 2,
+          "y": 1,
+          "z": 4
+        },
+        {
+          "x": 2,
+          "y": 2,
+          "z": -3
+        },
+        {
+          "x": 2,
+          "y": 2,
+          "z": 3
+        },
+        {
+          "x": 2,
           "y": 3,
           "z": -3
         },
@@ -2231,6 +2251,56 @@
         {
           "x": 3,
           "y": 0,
+          "z": 3
+        },
+        {
+          "x": 3,
+          "y": 1,
+          "z": -3
+        },
+        {
+          "x": 3,
+          "y": 1,
+          "z": -2
+        },
+        {
+          "x": 3,
+          "y": 1,
+          "z": 2
+        },
+        {
+          "x": 3,
+          "y": 1,
+          "z": 3
+        },
+        {
+          "x": 3,
+          "y": 2,
+          "z": -3
+        },
+        {
+          "x": 3,
+          "y": 2,
+          "z": -2
+        },
+        {
+          "x": 3,
+          "y": 2,
+          "z": -1
+        },
+        {
+          "x": 3,
+          "y": 2,
+          "z": 1
+        },
+        {
+          "x": 3,
+          "y": 2,
+          "z": 2
+        },
+        {
+          "x": 3,
+          "y": 2,
           "z": 3
         },
         {
@@ -2482,10 +2552,10 @@
           "estimatedDurationMs": 250
         },
         "score": {
-          "completionScore": 89.21161825726142,
+          "completionScore": 95.0207468879668,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 93.52697095435684,
+          "finalScore": 97.01244813278007,
           "programCost": 1.25
         },
         "jointAngles": {
@@ -2769,10 +2839,10 @@
           "estimatedDurationMs": 500
         },
         "score": {
-          "completionScore": 89.21161825726142,
+          "completionScore": 95.0207468879668,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 93.52697095435684,
+          "finalScore": 97.01244813278007,
           "programCost": 2.5
         },
         "jointAngles": {
@@ -3052,10 +3122,10 @@
           "estimatedDurationMs": 0
         },
         "score": {
-          "completionScore": 89.21161825726142,
+          "completionScore": 95.0207468879668,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 93.52697095435684,
+          "finalScore": 97.01244813278007,
           "programCost": 1.25
         },
         "jointAngles": {
@@ -3328,7 +3398,7 @@
       },
       "expect": {
         "status": "error",
-        "errorMessage": "Elbow Joint would contact the head; joint baseYaw stopped at safe angle -34.48°; source block a.",
+        "errorMessage": "Elbow Joint would contact the head. baseYaw stopped at -34.48° — the highlighted block asked for more.",
         "metrics": {
           "sourceBlockCount": 1,
           "executedCommandCount": 0,
@@ -3625,10 +3695,10 @@
           "estimatedDurationMs": 1416.6666666666665
         },
         "score": {
-          "completionScore": 89.21161825726142,
+          "completionScore": 95.0207468879668,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 93.52697095435684,
+          "finalScore": 97.01244813278007,
           "programCost": 4.5
         },
         "jointAngles": {
@@ -3932,10 +4002,10 @@
           "estimatedDurationMs": 2833.333333333333
         },
         "score": {
-          "completionScore": 89.21161825726142,
+          "completionScore": 95.0207468879668,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 93.52697095435684,
+          "finalScore": 97.01244813278007,
           "programCost": 6.25
         },
         "jointAngles": {
@@ -4239,10 +4309,10 @@
           "estimatedDurationMs": 5644.444444444444
         },
         "score": {
-          "completionScore": 84.64730290456431,
+          "completionScore": 99.56521739130434,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 90.78838174273858,
+          "finalScore": 99.7391304347826,
           "programCost": 6.25
         },
         "jointAngles": {
@@ -4548,10 +4618,10 @@
           "estimatedDurationMs": 14811.111111111113
         },
         "score": {
-          "completionScore": 84.64730290456431,
+          "completionScore": 99.56521739130434,
           "efficiencyScore": 65.78947368421053,
           "timeScore": 38.11327831957989,
-          "finalScore": 72.95274191172821,
+          "finalScore": 81.90349060377223,
           "programCost": 9.5
         },
         "jointAngles": {
@@ -4833,10 +4903,10 @@
           "estimatedDurationMs": 16499.999999999993
         },
         "score": {
-          "completionScore": 89.21161825726142,
+          "completionScore": 95.0207468879668,
           "efficiencyScore": 48.07692307692308,
           "timeScore": 34.212121212121225,
-          "finalScore": 70.6780199054058,
+          "finalScore": 74.16349708382903,
           "programCost": 13
         },
         "jointAngles": {

@@ -91,7 +91,7 @@ def scoring():
           f"time {score['timeScore']:.2f}   FINAL {score['finalScore']:.4f}")
     print(f"    executed={result['metrics']['executedCommandCount']} "
           f"estDuration={result['metrics']['estimatedDurationMs']:.0f}ms  engine={result['replay']['engineVersion']}")
-    print("    ↑ matches the TypeScript conformance vectors exactly (84.65 / 90.7884)")
+    print("    ↑ matches the TypeScript conformance vectors exactly (99.57 / 99.74)")
 
     _, crash = submit("demo-crash", "neat-short-cap", 1, COLLIDING)
     terminal = crash["terminal"]
