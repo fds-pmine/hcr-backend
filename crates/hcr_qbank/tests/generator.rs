@@ -120,7 +120,9 @@ fn generation_is_deterministic() {
     // The whole audit story depends on this: `(family, version, seed, params)`
     // must reproduce the same challenge forever.
     let generator = CapTrimGenerator::new(prototype());
-    let vector = params(2.0, 1.0, 0.55, 0.3);
+    // `baseYaw` travels ±60°, so the turn has to name a sector the arm can
+    // actually sweep — an unreachable one is now refused rather than generated.
+    let vector = params(2.0, 1.0, 0.55, 0.1);
 
     let first = generator.generate(42, &vector).unwrap();
     let second = generator.generate(42, &vector).unwrap();
@@ -149,10 +151,17 @@ fn degenerate_parameters_are_rejected_rather_than_served() {
     let result = generator.generate(1, &params(2.0, 0.0, 0.6, 0.0));
     assert_eq!(result.unwrap_err(), GenError::NothingToRemove);
 
-    // A zero-width sector still shaves a thin line (~12 voxels of 499), which is
-    // a narrow but legitimate precision task — not degenerate.
-    let sliver = generator.generate(1, &params(2.0, 1.0, 0.0, 0.0)).unwrap();
-    assert!(sliver.target_hair.voxels.len() < sliver.initial_hair.voxels.len());
+    // A zero-width sector gives the reference nothing to sweep across, so no
+    // program defines a target. The family samples span in [0.25, 1.0]; this is
+    // reachable only by calling `generate` directly.
+    let sliver = generator.generate(1, &params(2.0, 1.0, 0.0, 0.0));
+    assert_eq!(sliver.unwrap_err(), GenError::NothingToRemove);
+
+    // A sector centred behind the head is outside `baseYaw`'s ±60° travel. It
+    // used to be generated anyway, producing an item asking for hair no program
+    // could touch.
+    let behind = generator.generate(1, &params(2.0, 1.0, 0.6, 0.5));
+    assert_eq!(behind.unwrap_err(), GenError::UnreachableSector);
 }
 
 #[test]
@@ -170,7 +179,9 @@ fn a_missing_parameter_is_reported_by_name() {
 #[test]
 fn generated_items_are_provisional_and_carry_provenance() {
     let generator = CapTrimGenerator::new(prototype());
-    let vector = params(2.0, 1.0, 0.6, 0.25);
+    // Turn inside `baseYaw`'s ±60°: a sector the arm cannot sweep no longer
+    // generates at all.
+    let vector = params(2.0, 1.0, 0.6, 0.1);
     let item = generator
         .generate_item(7, &vector, &DifficultyModel::expert_prior())
         .unwrap();
@@ -267,8 +278,10 @@ fn a_symmetric_target_scores_lower_asymmetry_than_a_one_sided_one() {
 
     // A full-turn sector trims all round: symmetric about the sagittal plane.
     let symmetric = generator.generate(1, &params(2.0, 1.0, 1.0, 0.0)).unwrap();
-    // A narrow sector off to one side is not.
-    let lopsided = generator.generate(1, &params(2.0, 1.0, 0.30, 0.25)).unwrap();
+    // A sector off to one side is not. The turn stays inside the arm's reach,
+    // and the span stays wide enough to clear the minimum removal margin —
+    // narrower than this and the item is refused rather than generated.
+    let lopsided = generator.generate(1, &params(2.0, 1.0, 0.55, 0.15)).unwrap();
 
     let symmetric_features = ChallengeFeatures::extract(&symmetric);
     let lopsided_features = ChallengeFeatures::extract(&lopsided);
@@ -432,45 +445,130 @@ fn generated(turn: f64) -> ChallengeDefinition {
         .expect("generates")
 }
 
+/// Every item this family emits can be finished perfectly.
+///
+/// The invariant the family exists to hold, and the one it used to violate. The
+/// shipped bank asked for hair the arm cannot reach: `Cap Trim 30%` wanted 91
+/// voxels with 20 reachable, `Cap Trim 72%` wanted 284 with 145, `Cap Trim 94%`
+/// wanted 345 with 232 — best achievable completion 77.95, 79.53 and 15.67. No
+/// learner could score 100 on any of them.
+///
+/// Deriving the target from a replayed reference makes that structurally
+/// impossible: the target *is* what the reference leaves, so the reference
+/// scores 100 by definition. This checks the definition holds end to end.
 #[test]
-fn a_derived_starter_aims_at_the_sector_the_item_trims() {
-    // The generator measures a voxel's azimuth as atan2(dz, dx) and centres the
-    // trimmed sector at `region_turn · 2π`; `rotation_y` makes the arm's azimuth
-    // `−baseYaw`. So the sweep is `−region_turn · 360°` whenever the joint can
-    // reach it — which is the whole point of deriving rather than copying.
-    for (turn, expected) in [(0.0, 0.0), (0.1, -36.0), (0.9, 36.0)] {
-        let challenge = generated(turn);
-        let workspace = challenge
-            .starter_workspace
-            .as_ref()
-            .unwrap_or_else(|| panic!("turn {turn} ships a starter"));
-        let blocks = starter_blocks(workspace);
+fn every_generated_item_can_be_finished_perfectly() {
+    let generator = CapTrimGenerator::new(prototype());
+    let mut checked = 0;
 
-        let (joint, angle) = blocks.last().expect("a sweep block");
-        assert_eq!(joint, "baseYaw", "turn {turn}");
-        assert!(
-            (angle - expected).abs() < 1e-9,
-            "turn {turn}: aimed {angle}, expected {expected}"
+    for seed in 0..60_u64 {
+        let vector = generator.family().sample(seed);
+        let Ok(challenge) = generator.generate(seed, &vector) else {
+            continue;
+        };
+
+        let reference = derive_reference(
+            &challenge,
+            vector[CapTrimGenerator::REGION_TURN],
+            vector[CapTrimGenerator::REGION_SPAN],
+            CapTrimGenerator::passes(&vector).expect("complete vector"),
+        )
+        .unwrap_or_else(|| panic!("seed {seed}: item shipped without a reference"));
+
+        let outcome = hcr_sim::replay(
+            &challenge,
+            &reference.program(),
+            hcr_sim::ReplayOptions::default(),
+        )
+        .unwrap_or_else(|error| panic!("seed {seed}: reference invalid: {error:?}"));
+
+        assert_eq!(
+            outcome.terminal.reason,
+            TerminalReason::Completed,
+            "seed {seed}: reference halted"
         );
+        assert!(
+            (outcome.score.completion_score - 100.0).abs() < 1e-6,
+            "seed {seed}: reference scored {}, not 100",
+            outcome.score.completion_score
+        );
+        checked += 1;
     }
+
+    assert!(checked >= 40, "only {checked}/60 seeds generated");
+}
+
+/// Doing nothing must not be a good score.
+///
+/// The other half of a playable item. Completion is an IoU over hair left
+/// standing, so its floor is `|target| / |initial|` — an empty program already
+/// scores well. If the reference only beats that by a fraction of a point there
+/// is nothing for a learner to see and nothing for the response to separate.
+/// Both failure modes have shipped: the drawn targets gave 77.95 achievable
+/// against 73.39 for doing nothing, and the first derived bank served an item
+/// asking 2 voxels of 342, worth 0.58 points.
+#[test]
+fn finishing_beats_doing_nothing_by_a_usable_margin() {
+    let generator = CapTrimGenerator::new(prototype());
+    let mut checked = 0;
+
+    for seed in 0..60_u64 {
+        let vector = generator.family().sample(seed);
+        let Ok(challenge) = generator.generate(seed, &vector) else {
+            continue;
+        };
+
+        let initial = challenge.initial_hair.voxels.len() as f64;
+        let target = challenge.target_hair.voxels.len() as f64;
+        // IoU of untouched hair: the target is a subset, so the union is the
+        // initial set.
+        let doing_nothing = 100.0 * target / initial;
+
+        assert!(
+            doing_nothing <= 98.0,
+            "seed {seed}: doing nothing already scores {doing_nothing:.2}"
+        );
+        checked += 1;
+    }
+
+    assert!(checked >= 40, "only {checked}/60 seeds generated");
 }
 
 #[test]
-fn a_starter_for_an_unreachable_sector_gets_as_close_as_the_joint_allows() {
-    // baseYaw travels ±60°, so a sector centred behind the head cannot be aimed
-    // at. Clamping to the nearest reachable heading is what a player would do,
-    // and it is honest — the alternative representations are checked first, so
-    // clamping only happens when none of them fit.
-    let challenge = generated(0.5);
+fn the_starter_positions_the_tool_and_withholds_the_cut() {
+    // The starter is the reference with its carving removed: it lifts the tool
+    // clear of the head and stops. Shipping the sweep too would hand over the
+    // solution, since the target is defined as that sweep's result.
+    let challenge = generated(0.1);
     let blocks = starter_blocks(
         challenge
             .starter_workspace
             .as_ref()
-            .expect("still ships a starter"),
+            .expect("ships a starter"),
     );
-    let (joint, angle) = blocks.last().expect("a sweep block");
-    assert_eq!(joint, "baseYaw");
-    assert_eq!(*angle, -60.0);
+
+    assert!(!blocks.is_empty(), "a starter has to be worth loading");
+    assert!(
+        blocks.iter().all(|(joint, _)| joint != "baseYaw"),
+        "the sweep is the learner's to supply: {blocks:?}"
+    );
+
+    // And what it does ship must leave hair standing, or it would be the answer.
+    let program = Program {
+        nodes: blocks
+            .iter()
+            .enumerate()
+            .map(|(index, (joint_id, angle_deg))| ProgramNode::SetJointAngle {
+                joint_id: joint_id.clone(),
+                angle_deg: *angle_deg,
+                source_block_id: format!("b{index}"),
+            })
+            .collect(),
+        source_block_count: blocks.len() as u32,
+    };
+    let outcome =
+        hcr_sim::replay(&challenge, &program, hcr_sim::ReplayOptions::default()).expect("valid");
+    assert!(outcome.score.completion_score < 100.0);
 }
 
 #[test]

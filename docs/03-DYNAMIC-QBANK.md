@@ -174,6 +174,74 @@ Determinism is non-negotiable: an item is identified by `(familyId, version, see
 challenge served today must be byte-identical to the one replayed next year during an audit. Provenance
 travels in `ChallengeMeta.generator`.
 
+### Targets are derived from a program, never drawn
+
+A generated target must be **reachable and solvable**, and geometry alone cannot promise either. The
+`cap-trim` family originally drew the trim sector on the head ellipsoid and called that the target. Nothing
+checked the arm could get there, and it could not — measured across the shipped bank:
+
+| Item | Asked to remove | Arm can ever reach | Best achievable | Doing nothing |
+| --- | --- | --- | --- | --- |
+| `Cap Trim 30%` | 91 | 20 | 77.95 | 73.39 |
+| `Cap Trim 72%` | 284 | 145 | 79.53 | 65.53 |
+| `Cap Trim 94%` | 345 | 232 | 15.67 | 5.74 |
+
+No learner could score 100 on any of them, and on the first two the entire reward for skilled play was ~5
+points. Such items also carry almost no measurement signal: responses compress into a narrow band, so
+discrimination collapses and calibration learns nothing.
+
+So the order is inverted. The generator derives a **reference program** from the item's parameters, replays
+it through `hcr_sim`, and adopts whatever hair it leaves standing as the target. The item is then winnable
+by construction — the reference scores exactly 100, because the target is defined as its result. This is the
+rule the authored challenge and the eight lessons already follow.
+
+Three gates enforce it, in order of increasing distrust:
+
+1. `derive_reference` keeps only the longest prefix of the reference that **runs to completion**, so a sweep
+   the head constraint stops can never define a target.
+2. `generate` re-scores the reference against the finished challenge and refuses to emit unless completion
+   is exactly 100 (`GenError::UnreachableSector`). The construction should make this redundant; "should" is
+   how the unwinnable bank shipped.
+3. `generate` refuses items whose reference removes less than `MIN_REMOVAL_FRACTION` (2%) of the hair
+   (`GenError::MarginTooSmall`). Completion is an IoU over remaining hair, so a 2-voxel trim out of 342
+   scores 99.42 for doing nothing — reachable, but worth 0.58 points and measuring nobody.
+
+The starter workspace is the reference with its carving removed: it positions the tool over the crown and
+stops, leaving the sweep for the learner. Shipping the sweep too would hand over the answer.
+
+### Authored targets: the dead-zone audit
+
+Derivation only covers *generated* items. An authored challenge — the shipped one, the eight lessons,
+anything added by hand — has no reference to derive from, so it is audited from the other direction by
+`HCR_Simulator_Frontend/tests/unit/reachability.test.ts`: sweep the collision-free joint space, union every
+hair voxel the tool passes through, and fail if a target asks for anything outside it.
+
+On the shipped head that dead zone is **91 of 241 voxels (37.8%)** — one solid wedge on the far side from
+the arm, worst at the crown, where the elbow meets the skull before the tool arrives.
+
+The two guarantees point opposite ways and neither replaces the other:
+
+| | Proves | Applies to |
+| --- | --- | --- |
+| Replayed reference | Target **is** solvable | Generated items |
+| Dead-zone sweep | Target is **not** solvable | Authored items |
+
+The sweep is necessary, not sufficient: touching every asked voxel in *some* pose is not one program
+touching them all, in one run, inside the command budget. It rules targets out; it cannot rule them in.
+
+The sweep costs minutes, so `npm run reachability` caches it to `tests/fixtures/reachability.json`. Each
+entry stores a signature over the geometry, lattice, hair and sampling grid it was measured from, and the
+audit **fails on a mismatch instead of trusting the cache** — a reachable set that outlived its geometry
+would clear an arm that can no longer reach any of it. The signature deliberately excludes
+`initialAngleDeg`: the sweep enumerates each joint's whole range, so a program's opening pose cannot change
+which poses exist, and excluding it lets the eight lessons share one measurement. That holds only while the
+sweep ignores connectivity between poses; give it a reachable-*from* notion and the start pose becomes an
+input again.
+
+Cost: the family now spans roughly `b ∈ [-1.0, +0.2]` rather than a nominal ±3, because deriving targets
+from one reference shape makes items resemble each other. Difficulty targeting at the tails leans on
+authored items until more families exist. Rejection rate is low — 2 of 300 seeds.
+
 Example families:
 
 | Family | Varies | Primarily measures |

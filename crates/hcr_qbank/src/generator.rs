@@ -11,7 +11,6 @@
 //! same challenge byte-for-byte years later, or an audit is impossible.
 
 use std::collections::BTreeMap;
-use std::f64::consts::{PI, TAU};
 
 use hcr_contract::{
     CalibrationState, ChallengeDefinition, ChallengeDefinitionDto, ChallengeMeta,
@@ -92,6 +91,15 @@ pub enum GenError {
     /// The parameters produced a challenge where nothing needs removing, so
     /// there is no task.
     NothingToRemove,
+    /// No safe reference solution exists, so the trim the parameters describe is
+    /// one the arm cannot perform.
+    ///
+    /// Rejecting is the point: an item generated anyway would ask for hair
+    /// nothing can reach, which is what every instance of this family used to do
+    /// (see [`crate::starter`]).
+    UnreachableSector,
+    /// The reference cuts so little that finishing barely beats doing nothing.
+    MarginTooSmall,
     /// The prototype challenge is unusable as a template.
     BadPrototype(&'static str),
 }
@@ -102,12 +110,27 @@ impl std::fmt::Display for GenError {
             GenError::MissingParam(name) => write!(f, "missing parameter `{name}`"),
             GenError::EmptyHairstyle => write!(f, "generated hairstyle is empty"),
             GenError::NothingToRemove => write!(f, "generated target equals the initial hairstyle"),
+            GenError::UnreachableSector => {
+                write!(f, "no safe reference solution trims the requested sector")
+            }
+            GenError::MarginTooSmall => {
+                write!(f, "finishing scores too close to doing nothing")
+            }
             GenError::BadPrototype(reason) => write!(f, "unusable prototype: {reason}"),
         }
     }
 }
 
 impl std::error::Error for GenError {}
+
+/// Smallest share of the hair a reference solution has to remove.
+///
+/// Sets the gap between finishing and doing nothing: because completion is an
+/// IoU over remaining hair, removing a fraction `f` of it makes that gap `100·f`
+/// points. At 2% an item is worth at least two points of score, which is the
+/// floor at which a learner can see they improved and the response can separate
+/// one ability from another. The authored challenge sits at 5%.
+const MIN_REMOVAL_FRACTION: f64 = 0.02;
 
 /// A generated item with its predicted placement on the difficulty scale.
 #[derive(Debug, Clone)]
@@ -208,11 +231,12 @@ pub trait ChallengeGenerator: Send + Sync + std::fmt::Debug {
 
 /// Generates "trim a cap of hair" challenges.
 ///
-/// The initial hairstyle is an ellipsoidal shell over the head; the target is
-/// that shell with an angular sector thinned out. Varying sector width, depth and
-/// orientation moves the item across the difficulty scale in a way the feature
-/// model can see: a narrow off-centre trim is asymmetric and fiddly, a broad
-/// shallow one is neither.
+/// The initial hairstyle is an ellipsoidal shell over the head. The target is
+/// whatever a reference solution leaves standing once it has swept that shell —
+/// derived rather than drawn, so the item is finishable by construction; see
+/// [`crate::starter`] for what drawing it cost. Varying sector width, depth and
+/// orientation changes the sweep the reference performs, and so how much of it a
+/// learner has to rebuild.
 #[derive(Debug, Clone)]
 pub struct CapTrimGenerator {
     family: ItemFamily,
@@ -236,10 +260,13 @@ impl CapTrimGenerator {
         Self {
             family: ItemFamily {
                 id: "cap-trim".to_string(),
-                // Bumped from "1": the parameter space narrowed, so items built
-                // by the old generator are not comparable to these and must not
-                // pool their responses during calibration.
-                version: "2".to_string(),
+                // Bumped from "2": the target is now the result of a replayed
+                // reference solution rather than a sector drawn on the
+                // ellipsoid, so the same params describe a different — and for
+                // the first time finishable — item. Responses to the old
+                // instances measured a different task and must not be pooled
+                // with these during calibration.
+                version: "3".to_string(),
                 dimensions: vec![
                     SkillDimension::Kinematics,
                     SkillDimension::Precision,
@@ -302,6 +329,21 @@ impl CapTrimGenerator {
             .copied()
             .ok_or_else(|| GenError::MissingParam(name.to_string()))
     }
+
+    /// How many sweeps the reference solution makes for these parameters.
+    ///
+    /// Public because the reference *defines* the target, so anything checking
+    /// an item is finishable has to rebuild the same program — and the trim
+    /// cannot go deeper than the cap is thick, which is not something a caller
+    /// should have to know to rederive.
+    ///
+    /// # Errors
+    /// [`GenError::MissingParam`] when the vector is incomplete.
+    pub fn passes(params: &ParamVector) -> Result<u32, GenError> {
+        let cap_thickness = Self::param(params, Self::CAP_THICKNESS)?;
+        let trim_depth = Self::param(params, Self::TRIM_DEPTH)?.min(cap_thickness);
+        Ok(trim_depth.round() as u32)
+    }
 }
 
 impl ChallengeGenerator for CapTrimGenerator {
@@ -324,7 +366,6 @@ impl ChallengeGenerator for CapTrimGenerator {
         // Shell thickness expressed in normalised-radius units, so it means the
         // same thing on every axis of the ellipsoid.
         let shell = cap_thickness * voxel.size / scale_mean;
-        let cut_from = (1.0 + shell) - trim_depth * voxel.size / scale_mean;
 
         // Bound the lattice search to the region the shell can occupy.
         let extent = |axis: usize| {
@@ -334,13 +375,10 @@ impl ChallengeGenerator for CapTrimGenerator {
             ((voxel.head_center[axis] - voxel.origin[axis]) / voxel.size).round() as i32
         };
 
-        let mut initial = Vec::new();
-        let mut target = Vec::new();
+        let mut initial: Vec<VoxelCoord> = Vec::new();
 
         // Hair grows on the crown and sides, not under the jaw.
         let chin = voxel.head_center[1] - 0.35 * voxel.head_scale[1];
-        let sector_centre = region_turn * TAU;
-        let sector_half_width = region_span * PI;
 
         for x in -extent(0)..=extent(0) {
             for y in -extent(1)..=extent(1) {
@@ -374,19 +412,6 @@ impl ChallengeGenerator for CapTrimGenerator {
                     }
 
                     initial.push(coord);
-
-                    // Trim only the outer layers, and only inside the sector.
-                    let azimuth =
-                        (world[2] - voxel.head_center[2]).atan2(world[0] - voxel.head_center[0]);
-                    let mut delta = (azimuth - sector_centre).abs() % TAU;
-                    if delta > PI {
-                        delta = TAU - delta;
-                    }
-
-                    let trimmed = radius >= cut_from && delta <= sector_half_width;
-                    if !trimmed {
-                        target.push(coord);
-                    }
                 }
             }
         }
@@ -394,11 +419,15 @@ impl ChallengeGenerator for CapTrimGenerator {
         if initial.is_empty() {
             return Err(GenError::EmptyHairstyle);
         }
-        if target.len() == initial.len() {
+        // A trim of zero layers, or across zero width, describes no cut at all.
+        // Caught here rather than after simulation so the error names the cause.
+        let passes = Self::passes(params)?;
+        if passes == 0 || region_span <= 0.0 {
             return Err(GenError::NothingToRemove);
         }
 
         let id = format!("{}-{seed:016x}", self.family.id);
+        let initial_len = initial.len();
         let mut challenge = ChallengeDefinition {
             id: id.clone(),
             name: format!("Cap Trim {:.0}%", region_span * 100.0),
@@ -412,25 +441,58 @@ impl ChallengeGenerator for CapTrimGenerator {
             initial_hair: HairstyleDefinition {
                 id: format!("{id}-initial"),
                 name: "Generated Cap".to_string(),
-                voxels: initial,
+                // Cloned as the placeholder target: carving depends on the hair
+                // and the geometry, never on the target, so the reference can be
+                // replayed before the real target exists.
+                voxels: initial.clone(),
             },
             target_hair: HairstyleDefinition {
                 id: format!("{id}-target"),
                 name: "Trimmed Cap".to_string(),
-                voxels: target,
+                voxels: initial,
             },
             allowed_blocks: self.prototype.allowed_blocks.clone(),
-            // Derived below, once the challenge it has to be safe *in* exists.
             starter_workspace: None,
             scoring: self.prototype.scoring,
         };
 
-        // Aimed at the sector this seed actually trims, and simulated before it
-        // is kept. `None` is a valid outcome: an item whose sector the arm
-        // cannot safely reach ships without a starter rather than with a
-        // program that halts on the head.
-        challenge.starter_workspace =
-            crate::starter::derive_starter_workspace(&challenge, region_turn);
+        // The target is what a reference solution actually leaves behind, not a
+        // sector drawn on the ellipsoid. Drawing it made items that asked for
+        // hair the arm cannot reach — see [`crate::starter`] for the measured
+        // damage. Deriving it means the reference scores exactly 100 by
+        // definition, so every item this family emits is winnable.
+        let reference =
+            crate::starter::derive_reference(&challenge, region_turn, region_span, passes)
+                .ok_or(GenError::UnreachableSector)?;
+        if !reference.removes_any(initial_len) {
+            return Err(GenError::UnreachableSector);
+        }
+        // Reachable is not the same as worth playing.
+        //
+        // Completion is an IoU over hair left standing, so an item that asks for
+        // 2 voxels out of 342 scores 99.42 for doing nothing and 100 for a
+        // perfect run. A learner cannot see progress in that half-point, and
+        // responses to it separate nobody — the item measures noise. The seeding
+        // path produced exactly that before this check existed.
+        let removed = initial_len - reference.remaining.len();
+        if (removed as f64) < MIN_REMOVAL_FRACTION * initial_len as f64 {
+            return Err(GenError::MarginTooSmall);
+        }
+
+        challenge.starter_workspace = reference.starter_workspace();
+        challenge.target_hair.voxels = reference.remaining.clone();
+
+        // Prove it, rather than trusting the construction.
+        //
+        // The target is *defined* as what the reference leaves, so this should
+        // be 100 by algebra — but "should be" is how the last unwinnable bank
+        // shipped. Scoring the reference against the finished challenge closes
+        // the loop through the same code that will score real submissions, so a
+        // disagreement between carving and scoring is caught here instead of by
+        // a learner who cannot finish.
+        if !reference.solves(&challenge) {
+            return Err(GenError::UnreachableSector);
+        }
 
         Ok(challenge)
     }

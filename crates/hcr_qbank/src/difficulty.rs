@@ -51,21 +51,27 @@ impl DifficultyModel {
         Self {
             // Calibrated against the measured feature distribution of the
             // reference `cap-trim` family (see `examples/family_probe.rs`), whose
-            // median item contributes ≈ 5.2 across the five terms. An earlier
+            // median item contributes ≈ 3.9 across the five terms. An earlier
             // guess of -2.0 put more than half the family at the +3 ceiling,
             // making every generated item look equally hard and defeating
             // difficulty targeting entirely.
             //
-            // Re-centred from -5.0 when `region_turn` was restricted to sector
-            // orientations the arm can reach. Dropping the unreachable ones
-            // removed the whole low end of `reach_strain` (min 0.221 → 0.590),
-            // which lifted the family's median predicted `b` from 0.04 to 0.18.
-            // The prior should sit at the ability it is meant to describe, so
-            // the intercept absorbs the shift rather than leaving every
-            // uncalibrated item quietly overrated.
-            intercept: -5.18,
-            // ln-scaled: a 200-voxel job contributes ~5.3 × 0.30 ≈ 1.6 logits
-            // more than a 5-voxel one.
+            // Re-centred from -5.18 when targets began being derived from a
+            // replayed reference solution rather than drawn on the ellipsoid.
+            // The old targets asked for hair the arm could not reach — up to 345
+            // voxels — so `removal_volume` was measuring an imaginary workload;
+            // real removals are 7–62 voxels (median 34), which dropped the
+            // family's median predicted `b` to -1.28. The prior should sit at
+            // the ability it describes, so the intercept absorbs the shift
+            // rather than leaving every uncalibrated item quietly underrated.
+            //
+            // Caveat worth knowing: the family now spans roughly [-1.0, +0.2]
+            // rather than a full ±3. Deriving targets from one reference shape
+            // makes items more alike, so difficulty targeting at the tails leans
+            // on authored items until the bank grows more families.
+            intercept: -3.90,
+            // ln-scaled: a 60-voxel job contributes ~4.1 × 0.30 ≈ 0.6 logits
+            // more than a 7-voxel one.
             removal_volume: 0.30,
             boundary_ratio: 1.10,
             asymmetry: 0.90,

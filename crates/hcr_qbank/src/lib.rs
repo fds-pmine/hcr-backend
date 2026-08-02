@@ -102,4 +102,4 @@ pub use generator::{
 pub use item::{BankItem, CatalogSnapshot};
 pub use mastery::{is_mastered, raw_from_remapped, remap_for_arona};
 pub use session::{SessionConfig, build_session};
-pub use starter::derive_starter_workspace;
+pub use starter::{ReferenceRun, derive_reference};
