@@ -2552,10 +2552,10 @@
           "estimatedDurationMs": 250
         },
         "score": {
-          "completionScore": 95.0207468879668,
+          "completionScore": 0,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 97.01244813278007,
+          "finalScore": 40,
           "programCost": 1.25
         },
         "jointAngles": {
@@ -2839,10 +2839,10 @@
           "estimatedDurationMs": 500
         },
         "score": {
-          "completionScore": 95.0207468879668,
+          "completionScore": 0,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 97.01244813278007,
+          "finalScore": 40,
           "programCost": 2.5
         },
         "jointAngles": {
@@ -3122,10 +3122,10 @@
           "estimatedDurationMs": 0
         },
         "score": {
-          "completionScore": 95.0207468879668,
+          "completionScore": 0,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 97.01244813278007,
+          "finalScore": 40,
           "programCost": 1.25
         },
         "jointAngles": {
@@ -3695,10 +3695,10 @@
           "estimatedDurationMs": 1416.6666666666665
         },
         "score": {
-          "completionScore": 95.0207468879668,
+          "completionScore": 0,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 97.01244813278007,
+          "finalScore": 40,
           "programCost": 4.5
         },
         "jointAngles": {
@@ -4002,10 +4002,10 @@
           "estimatedDurationMs": 2833.333333333333
         },
         "score": {
-          "completionScore": 95.0207468879668,
+          "completionScore": 0,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 97.01244813278007,
+          "finalScore": 40,
           "programCost": 6.25
         },
         "jointAngles": {
@@ -4309,10 +4309,10 @@
           "estimatedDurationMs": 5644.444444444444
         },
         "score": {
-          "completionScore": 99.56521739130434,
+          "completionScore": 91.66666666666666,
           "efficiencyScore": 100,
           "timeScore": 100,
-          "finalScore": 99.7391304347826,
+          "finalScore": 95,
           "programCost": 6.25
         },
         "jointAngles": {
@@ -4618,10 +4618,10 @@
           "estimatedDurationMs": 14811.111111111113
         },
         "score": {
-          "completionScore": 99.56521739130434,
+          "completionScore": 91.66666666666666,
           "efficiencyScore": 65.78947368421053,
           "timeScore": 38.11327831957989,
-          "finalScore": 81.90349060377223,
+          "finalScore": 77.16436016898962,
           "programCost": 9.5
         },
         "jointAngles": {
@@ -4903,10 +4903,10 @@
           "estimatedDurationMs": 16499.999999999993
         },
         "score": {
-          "completionScore": 95.0207468879668,
+          "completionScore": 0,
           "efficiencyScore": 48.07692307692308,
           "timeScore": 34.212121212121225,
-          "finalScore": 74.16349708382903,
+          "finalScore": 17.151048951048953,
           "programCost": 13
         },
         "jointAngles": {

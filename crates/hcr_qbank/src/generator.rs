@@ -125,11 +125,19 @@ impl std::error::Error for GenError {}
 
 /// Smallest share of the hair a reference solution has to remove.
 ///
-/// Sets the gap between finishing and doing nothing: because completion is an
-/// IoU over remaining hair, removing a fraction `f` of it makes that gap `100·f`
-/// points. At 2% an item is worth at least two points of score, which is the
-/// floor at which a learner can see they improved and the response can separate
-/// one ability from another. The authored challenge sits at 5%.
+/// # Why this is still here
+///
+/// It was introduced to guarantee a gap between finishing and doing nothing,
+/// back when completion compared the hair left standing and an item asking for
+/// 2 voxels of 342 scored 99.42 for an empty program. Scoring the cut removed
+/// that problem outright: doing nothing is 0 on every item, however small.
+///
+/// The rule survives for a different reason — **resolution**. Completion is a
+/// ratio over the asked set, so an item asking for 2 voxels can only ever score
+/// 0, 50 or 100. One stray voxel swings it half the scale, which makes the
+/// response mostly noise and gives calibration almost nothing to fit. At 2% of
+/// a ~350-voxel head an item has roughly seven voxels of resolution; the
+/// authored challenge has twelve.
 const MIN_REMOVAL_FRACTION: f64 = 0.02;
 
 /// A generated item with its predicted placement on the difficulty scale.
@@ -467,13 +475,10 @@ impl ChallengeGenerator for CapTrimGenerator {
         if !reference.removes_any(initial_len) {
             return Err(GenError::UnreachableSector);
         }
-        // Reachable is not the same as worth playing.
-        //
-        // Completion is an IoU over hair left standing, so an item that asks for
-        // 2 voxels out of 342 scores 99.42 for doing nothing and 100 for a
-        // perfect run. A learner cannot see progress in that half-point, and
-        // responses to it separate nobody — the item measures noise. The seeding
-        // path produced exactly that before this check existed.
+        // Reachable is not the same as worth measuring: an item asking for a
+        // handful of voxels can only score at a handful of values, so its
+        // responses carry almost no information. The seeding path produced a
+        // 2-voxel item before this check existed.
         let removed = initial_len - reference.remaining.len();
         if (removed as f64) < MIN_REMOVAL_FRACTION * initial_len as f64 {
             return Err(GenError::MarginTooSmall);

@@ -74,7 +74,10 @@ pub fn replay(
     let estimated_duration_ms =
         estimate_program_duration(&commands, &challenge.robot_config.joints)?;
 
-    let mut hair: VoxelSet = challenge.initial_hair.voxels.iter().copied().collect();
+    // Kept alongside the mutable set: completion is scored on the cut, so the
+    // starting hairstyle has to survive the run that carves it.
+    let initial: VoxelSet = challenge.initial_hair.voxels.iter().copied().collect();
+    let mut hair: VoxelSet = initial.clone();
     let target: VoxelSet = challenge.target_hair.voxels.iter().copied().collect();
 
     let mut controller =
@@ -148,7 +151,7 @@ pub fn replay(
         estimated_duration_ms,
     };
 
-    let score = calculate_score(&target, &hair, &metrics, &challenge.scoring)?;
+    let score = calculate_score(&initial, &target, &hair, &metrics, &challenge.scoring)?;
     let result_voxels_hash = result_voxels_hash(&hair);
 
     Ok(ReplayOutcome {

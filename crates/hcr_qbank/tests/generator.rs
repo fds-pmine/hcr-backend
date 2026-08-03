@@ -498,17 +498,15 @@ fn every_generated_item_can_be_finished_perfectly() {
     assert!(checked >= 40, "only {checked}/60 seeds generated");
 }
 
-/// Doing nothing must not be a good score.
+/// An item has to be able to tell two learners apart.
 ///
-/// The other half of a playable item. Completion is an IoU over hair left
-/// standing, so its floor is `|target| / |initial|` — an empty program already
-/// scores well. If the reference only beats that by a fraction of a point there
-/// is nothing for a learner to see and nothing for the response to separate.
-/// Both failure modes have shipped: the drawn targets gave 77.95 achievable
-/// against 73.39 for doing nothing, and the first derived bank served an item
-/// asking 2 voxels of 342, worth 0.58 points.
+/// Completion is a ratio over the asked set, so the size of that set *is* the
+/// item's resolution. Both failure modes have shipped: drawn targets asked for
+/// hair the arm could not reach, capping everyone at 77.95; and the first
+/// derived bank served an item asking 2 voxels of 342, which can only score 0,
+/// 50 or 100 however well anyone plays.
 #[test]
-fn finishing_beats_doing_nothing_by_a_usable_margin() {
+fn every_item_has_enough_resolution_to_measure_with() {
     let generator = CapTrimGenerator::new(prototype());
     let mut checked = 0;
 
@@ -518,15 +516,16 @@ fn finishing_beats_doing_nothing_by_a_usable_margin() {
             continue;
         };
 
-        let initial = challenge.initial_hair.voxels.len() as f64;
-        let target = challenge.target_hair.voxels.len() as f64;
-        // IoU of untouched hair: the target is a subset, so the union is the
-        // initial set.
-        let doing_nothing = 100.0 * target / initial;
+        let initial = challenge.initial_hair.voxels.len();
+        let asked = initial - challenge.target_hair.voxels.len();
 
+        // Completion is a ratio over the asked set, so `asked` is the item's
+        // resolution: an item asking for 2 voxels can only score 0, 50 or 100,
+        // and one stray voxel moves it half the scale.
         assert!(
-            doing_nothing <= 98.0,
-            "seed {seed}: doing nothing already scores {doing_nothing:.2}"
+            asked >= 5,
+            "seed {seed}: asks for only {asked} voxel(s) of {initial} \
+             — too coarse to measure anyone with"
         );
         checked += 1;
     }

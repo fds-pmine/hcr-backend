@@ -93,6 +93,8 @@ async fn unknown_challenges_and_routes_are_404() {
 #[tokio::test]
 async fn the_score_endpoint_matches_the_v1_score_provider() {
     let input = ScoreInput {
+        // Asked for one voxel off, and it came off: completion 100.
+        initial_voxels: vec!["0,0,0".into(), "1,0,0".into(), "2,0,0".into()],
         target_voxels: vec!["0,0,0".into(), "1,0,0".into()],
         result_voxels: vec!["0,0,0".into(), "1,0,0".into()],
         program_metrics: ProgramMetrics {
@@ -125,6 +127,7 @@ async fn the_score_endpoint_matches_the_v1_score_provider() {
 #[tokio::test]
 async fn a_malformed_voxel_key_is_reported_as_a_validation_error() {
     let input = ScoreInput {
+        initial_voxels: vec![],
         target_voxels: vec!["not-a-key".into()],
         result_voxels: vec![],
         program_metrics: ProgramMetrics::default(),

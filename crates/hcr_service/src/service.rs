@@ -187,9 +187,11 @@ impl HcrService {
                 .collect()
         };
 
+        let initial = parse(&input.initial_voxels)?;
         let target = parse(&input.target_voxels)?;
         let result = parse(&input.result_voxels)?;
         Ok(calculate_score(
+            &initial,
             &target,
             &result,
             &input.program_metrics,

@@ -118,21 +118,52 @@ pub fn find_swept_voxel_hits(
     hits
 }
 
-/// Intersection-over-union of two voxel sets, scaled to 0..=100.
+/// How well a run performed the cut the challenge asked for, scaled to 0..=100.
 ///
-/// Two empty sets score 100, per SPEC v0.3 §10.3.
-pub fn calculate_voxel_iou(target: &VoxelSet, result: &VoxelSet) -> f64 {
-    if target.is_empty() && result.is_empty() {
-        return 100.0;
+/// Ports `calculateTrimScore` in `src/features/voxel/similarity.ts`. Jaccard
+/// overlap between the hair removed and the hair the target says to remove:
+///
+/// ```text
+/// asked   = initial \ target
+/// removed = initial \ result
+/// score   = |removed ∩ asked| / |removed ∪ asked|
+/// ```
+///
+/// # Why not compare the hair left standing
+///
+/// That is what this used to do, and its floor was not zero. Most of a hairstyle
+/// is never meant to be touched, so an empty program already matched nearly all
+/// of it: on the shipped challenge the target keeps 229 of 241 voxels, and doing
+/// nothing scored **95.02**. The whole distance between "did nothing" and
+/// "perfect" was five points on top of a floor that measured the hairstyle
+/// rather than the learner, and everything downstream — the ability seed above
+/// all — inherited it.
+///
+/// A challenge that asks for nothing is satisfied by doing nothing, so an empty
+/// union scores 100.
+pub fn calculate_trim_score(initial: &VoxelSet, target: &VoxelSet, result: &VoxelSet) -> f64 {
+    let mut intersection = 0usize;
+    let mut union = 0usize;
+
+    for key in initial {
+        let asked = !target.contains(key);
+        let removed = !result.contains(key);
+        if asked || removed {
+            union += 1;
+            if asked && removed {
+                intersection += 1;
+            }
+        }
     }
 
-    let intersection_size = target.iter().filter(|key| result.contains(*key)).count();
-    let union_size = target.len() + result.len() - intersection_size;
+    // Hair conjured from nothing is not something the engine can produce, but a
+    // score is the wrong place to discover that: count it against the run.
+    union += result.iter().filter(|key| !initial.contains(*key)).count();
 
-    if union_size == 0 {
+    if union == 0 {
         100.0
     } else {
-        (intersection_size as f64 / union_size as f64) * 100.0
+        (intersection as f64 / union as f64) * 100.0
     }
 }
 

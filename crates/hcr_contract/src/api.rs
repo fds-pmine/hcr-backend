@@ -19,6 +19,12 @@ use crate::wire::HcrError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreInput {
+    /// The hairstyle before the program ran.
+    ///
+    /// Completion is scored on the *cut* — which hair came off against which
+    /// hair should have — and that cannot be reconstructed from the target and
+    /// the result alone.
+    pub initial_voxels: Vec<String>,
     /// The hairstyle being aimed for.
     pub target_voxels: Vec<String>,
     /// What the program actually left standing.

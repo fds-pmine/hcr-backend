@@ -5,7 +5,7 @@
 use hcr_contract::{ProgramMetrics, ScoreResult, ScoringConfig};
 
 use crate::error::SimError;
-use crate::voxel::{VoxelSet, calculate_voxel_iou};
+use crate::voxel::{VoxelSet, calculate_trim_score};
 
 const SCORE_MAX: f64 = 100.0;
 const WEIGHT_TOLERANCE: f64 = 1e-6;
@@ -16,6 +16,7 @@ const WEIGHT_TOLERANCE: f64 = 1e-6;
 /// Returns [`SimError::InvalidScoring`] if the challenge's scoring block is
 /// malformed — weights that do not sum to 1, or non-positive references.
 pub fn calculate_score(
+    initial_voxels: &VoxelSet,
     target_voxels: &VoxelSet,
     result_voxels: &VoxelSet,
     metrics: &ProgramMetrics,
@@ -23,7 +24,8 @@ pub fn calculate_score(
 ) -> Result<ScoreResult, SimError> {
     validate_scoring_config(scoring)?;
 
-    let completion_score = clamp_score(calculate_voxel_iou(target_voxels, result_voxels));
+    let completion_score =
+        clamp_score(calculate_trim_score(initial_voxels, target_voxels, result_voxels));
 
     let program_cost = f64::from(metrics.source_block_count)
         + scoring.command_weight * f64::from(metrics.executed_command_count);

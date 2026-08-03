@@ -234,23 +234,37 @@ fn missing_joint_angle_is_rejected() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn iou_matches_the_typescript_rules() {
+fn trim_score_matches_the_typescript_rules() {
     let empty = VoxelSet::new();
-    // SPEC v0.3 §10.3: two empty sets score 100.
-    assert_eq!(calculate_voxel_iou(&empty, &empty), 100.0);
+    // Four voxels of hair; the challenge asks for the first two off.
+    let initial: VoxelSet = [coord(0, 0, 0), coord(1, 0, 0), coord(2, 0, 0), coord(3, 0, 0)]
+        .into_iter()
+        .collect();
+    let target: VoxelSet = [coord(2, 0, 0), coord(3, 0, 0)].into_iter().collect();
 
-    let a: VoxelSet = [coord(0, 0, 0), coord(1, 0, 0)].into_iter().collect();
-    assert_eq!(calculate_voxel_iou(&a, &a), 100.0);
+    // The regression this metric exists for: comparing the hair left standing
+    // scored an untouched head 50 here, and 95.02 on the shipped challenge.
+    assert_eq!(calculate_trim_score(&initial, &target, &initial), 0.0);
 
-    // One side empty scores 0.
-    assert_eq!(calculate_voxel_iou(&a, &empty), 0.0);
+    // Exactly the asked cut.
+    assert_eq!(calculate_trim_score(&initial, &target, &target), 100.0);
 
-    let b: VoxelSet = [coord(2, 0, 0), coord(3, 0, 0)].into_iter().collect();
-    assert_eq!(calculate_voxel_iou(&a, &b), 0.0);
+    // One of the two asked voxels removed.
+    let half: VoxelSet = [coord(1, 0, 0), coord(2, 0, 0), coord(3, 0, 0)]
+        .into_iter()
+        .collect();
+    approx(calculate_trim_score(&initial, &target, &half), 50.0, 1e-12);
 
-    // Half overlap: |∩| = 1, |∪| = 3.
-    let c: VoxelSet = [coord(1, 0, 0), coord(9, 0, 0)].into_iter().collect();
-    approx(calculate_voxel_iou(&a, &c), 100.0 / 3.0, 1e-12);
+    // Everything off: both asked voxels, plus two that should have stayed.
+    approx(calculate_trim_score(&initial, &target, &empty), 50.0, 1e-12);
+
+    // Only hair nobody asked for.
+    let wrong: VoxelSet = [coord(0, 0, 0), coord(1, 0, 0)].into_iter().collect();
+    assert_eq!(calculate_trim_score(&initial, &target, &wrong), 0.0);
+
+    // A challenge that asks for nothing is satisfied by doing nothing.
+    assert_eq!(calculate_trim_score(&initial, &initial, &initial), 100.0);
+    assert_eq!(calculate_trim_score(&empty, &empty, &empty), 100.0);
 }
 
 #[test]
@@ -425,6 +439,10 @@ fn duration_rejects_out_of_range_angles_and_negative_waits() {
 
 #[test]
 fn score_matches_the_typescript_formula() {
+    // Asked for one voxel off, and it came off: completion 100.
+    let initial: VoxelSet = [coord(0, 0, 0), coord(1, 0, 0), coord(2, 0, 0)]
+        .into_iter()
+        .collect();
     let target: VoxelSet = [coord(0, 0, 0), coord(1, 0, 0)].into_iter().collect();
     let result = target.clone();
     let metrics = ProgramMetrics {
@@ -434,7 +452,7 @@ fn score_matches_the_typescript_formula() {
     };
     let scoring = default_scoring();
 
-    let score = calculate_score(&target, &result, &metrics, &scoring).unwrap();
+    let score = calculate_score(&initial, &target, &result, &metrics, &scoring).unwrap();
 
     // programCost = 5 + 0.25*5 = 6.25, which is exactly referenceProgramCost.
     approx(score.program_cost, 6.25, 1e-12);
@@ -454,7 +472,8 @@ fn scores_are_clamped_to_100() {
     };
     // A one-block program is far cheaper and faster than the references, so both
     // ratios exceed 100 and must clamp rather than overflow the final score.
-    let score = calculate_score(&target, &target, &metrics, &default_scoring()).unwrap();
+    let score =
+        calculate_score(&target, &target, &target, &metrics, &default_scoring()).unwrap();
     assert_eq!(score.efficiency_score, 100.0);
     assert_eq!(score.time_score, 100.0);
     assert_eq!(score.final_score, 100.0);
@@ -468,7 +487,8 @@ fn zero_cost_and_zero_duration_score_full_marks() {
         executed_command_count: 0,
         estimated_duration_ms: 0.0,
     };
-    let score = calculate_score(&empty, &empty, &metrics, &default_scoring()).unwrap();
+    let score =
+        calculate_score(&empty, &empty, &empty, &metrics, &default_scoring()).unwrap();
     assert_eq!(score.efficiency_score, 100.0);
     assert_eq!(score.time_score, 100.0);
 }
