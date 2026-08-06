@@ -97,6 +97,8 @@ sudo sed -i "s|replace-me-openssl-rand-hex-32|$(openssl rand -hex 32)|" /etc/hcr
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now hcr-server
+
+sudo systemctl restart hcr-server
 ```
 
 Then put a reverse proxy in front — see §2.1 (nginx/aaPanel) or §2.2 (Caddy).
