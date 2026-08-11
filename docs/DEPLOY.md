@@ -1,4 +1,4 @@
-# Deployment — `hcr.pmine.org` and `hcrapi.pmine.org`
+# Deployment — `app.hcr.rs` and `api.hcr.rs`
 
 Public, open to anyone, as an academy experiment. That decision shapes everything
 below: there is no sign-in, and the guards that matter are the ones that hold
@@ -47,7 +47,7 @@ visit lands on `/`.
 Environment variable, on **production and preview both**:
 
 ```
-VITE_HCR_API_BASE_URL = https://hcrapi.pmine.org
+VITE_HCR_API_BASE_URL = https://api.hcr.rs
 ```
 
 > Vite inlines `import.meta.env.*` at **build** time. Changing it means a rebuild.
@@ -56,12 +56,12 @@ VITE_HCR_API_BASE_URL = https://hcrapi.pmine.org
 > failure rather than the loud one.
 
 `public/_headers` ships a CSP whose `connect-src` allows `'self'` and
-`https://hcrapi.pmine.org` only. If the API hostname changes, that file changes
+`https://api.hcr.rs` only. If the API hostname changes, that file changes
 with it or the browser blocks every request.
 
-Add `hcr.pmine.org` as a custom domain; Cloudflare issues the certificate.
+Add `app.hcr.rs` as a custom domain; Cloudflare issues the certificate.
 
-**Favicon:** `index.html` references `/favicon.png`. Save the pmine mark to
+**Favicon:** `index.html` references `/favicon.png`. Save the site mark to
 `HCR_Simulator_Frontend/public/favicon.png` — `public/` is copied to `dist/`
 verbatim.
 
@@ -172,7 +172,7 @@ nginx has `limit_req` built in.
 | --- | --- | --- |
 | `HCR_SIGNING_KEY` | **required** | HMAC key for item references, ≥32 bytes. The server refuses to start without it. |
 | `HCR_BIND` | `127.0.0.1:18623` | Loopback; Caddy fronts it. |
-| `HCR_CORS_ORIGIN` | *absent* | `https://hcr.pmine.org`. Absent sends no CORS headers, which breaks the frontend. |
+| `HCR_CORS_ORIGIN` | *absent* | `https://app.hcr.rs`. Absent sends no CORS headers, which breaks the frontend. |
 | `HCR_USAGE_LOG` | *absent* | Path to append usage events to. Omit to collect nothing. |
 
 `HCR_SIGNING_KEY` must be **stable across restarts** — it signs the `itemRef`
@@ -185,7 +185,7 @@ its own source.
 
 ### DNS
 
-Point `hcrapi.pmine.org` at the VPS, proxied through Cloudflare (orange cloud).
+Point `api.hcr.rs` at the VPS, proxied through Cloudflare (orange cloud).
 Then restrict the VPS firewall to Cloudflare's ranges, or the proxy — and the
 rate limiting in front of it — can be walked around by hitting the IP directly.
 
@@ -245,11 +245,11 @@ jq -r 'select(.kind=="submission") | [.challengeId, .completionScore] | @tsv' \
 ## 5. Checking a deployment
 
 ```sh
-curl -s https://hcrapi.pmine.org/api/v1/time
-curl -s https://hcrapi.pmine.org/api/v1/challenges | jq -r '.[].id'
+curl -s https://api.hcr.rs/api/v1/time
+curl -s https://api.hcr.rs/api/v1/challenges | jq -r '.[].id'
 
-curl -si -X OPTIONS https://hcrapi.pmine.org/api/v1/challenges \
-  -H 'Origin: https://hcr.pmine.org' | grep -i access-control-allow-origin
+curl -si -X OPTIONS https://api.hcr.rs/api/v1/challenges \
+  -H 'Origin: https://app.hcr.rs' | grep -i access-control-allow-origin
 ```
 
 The frontend's own live suite is the better check — it drives the real client
@@ -258,7 +258,7 @@ standings):
 
 ```sh
 cd HCR_Simulator_Frontend
-HCR_API_BASE_URL=https://hcrapi.pmine.org npm test -- tests/integration
+HCR_API_BASE_URL=https://api.hcr.rs npm test -- tests/integration
 ```
 
 It self-skips when the API is unreachable, so a green run with 6 skips means it

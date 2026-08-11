@@ -7,7 +7,7 @@
 # certificate itself, and a expired certificate is the most common way a small
 # deployment goes dark.
 
-hcrapi.pmine.org {
+api.hcr.rs {
 	# The API is plain HTTP on loopback; this is the only thing that should
 	# reach it.
 	reverse_proxy 127.0.0.1:18623

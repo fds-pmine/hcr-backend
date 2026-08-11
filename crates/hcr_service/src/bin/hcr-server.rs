@@ -6,7 +6,7 @@
 //! ```sh
 //! HCR_SIGNING_KEY="$(openssl rand -hex 32)" \
 //! HCR_BIND=0.0.0.0:18623 \
-//! HCR_CORS_ORIGIN=https://hcr.pmine.org \
+//! HCR_CORS_ORIGIN=https://app.hcr.rs \
 //!   hcr-server
 //! ```
 //!
