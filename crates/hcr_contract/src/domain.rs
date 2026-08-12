@@ -51,14 +51,67 @@ pub struct JointConfig {
     pub name: String,
     /// Axis this joint rotates about.
     pub axis: Axis,
-    /// Lower travel limit, degrees.
+    /// Lower travel limit, **servo degrees** when `servo` is present.
     pub min_angle_deg: f64,
-    /// Upper travel limit, degrees.
+    /// Upper travel limit, **servo degrees** when `servo` is present.
     pub max_angle_deg: f64,
-    /// Angle at reset, degrees.
+    /// Angle at reset, **servo degrees** when `servo` is present.
     pub initial_angle_deg: f64,
     /// Slew rate used for duration estimation, degrees per second.
     pub speed_deg_per_sec: f64,
+    /// How this joint's angles map onto a servo on the physical arm.
+    ///
+    /// Absent for simulation-only joints the hardware has no axis for
+    /// (`shoulderRoll`), whose angles stay geometric because there is no servo
+    /// whose degrees they could be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servo: Option<ServoMapping>,
+}
+
+/// A servo on the arm, named as `hcr-fw` names them (`robot/axis_config.rs`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ServoAxisId {
+    X,
+    Y,
+    Z,
+    B,
+    E,
+}
+
+/// Affine map between a joint's servo degrees and the geometric angle the
+/// kinematics rotates by.
+///
+/// ```text
+/// servoDeg     = centerDeg + direction × (geometricDeg − offsetDeg)
+/// geometricDeg = offsetDeg + direction × (servoDeg − centerDeg)
+/// ```
+///
+/// Mirrors `features/robot/servoMapping.ts` on the frontend; the two must agree
+/// or replayed scores would not match what the learner saw.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServoMapping {
+    pub axis: ServoAxisId,
+    /// Servo angle the joint's `offset_deg` lands on. 90° on every axis.
+    pub center_deg: f64,
+    /// `+1` when the servo turns the same way as the model, `-1` when it opposes.
+    pub direction: i8,
+    /// Geometric angle that `center_deg` corresponds to.
+    pub offset_deg: f64,
+}
+
+impl ServoMapping {
+    /// Servo degrees -> the geometric angle the kinematics rotates by.
+    #[must_use]
+    pub fn to_geometric_deg(&self, servo_deg: f64) -> f64 {
+        self.offset_deg + f64::from(self.direction) * (servo_deg - self.center_deg)
+    }
+
+    /// Geometric angle -> the degrees the servo is commanded to.
+    #[must_use]
+    pub fn to_servo_deg(&self, geometric_deg: f64) -> f64 {
+        self.center_deg + f64::from(self.direction) * (geometric_deg - self.offset_deg)
+    }
 }
 
 /// Capsule radii used by the head-collision constraint.

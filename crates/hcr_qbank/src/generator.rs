@@ -324,10 +324,11 @@ impl CapTrimGenerator {
             .iter()
             .find(|joint| joint.id == "baseYaw")
             .map_or((0.0, 1.0), |joint| {
-                (
-                    -joint.max_angle_deg / 360.0,
-                    -joint.min_angle_deg / 360.0,
-                )
+                // Azimuth is a fact about where the arm points, so the reasoning
+                // above is in geometric degrees — not the servo degrees the
+                // joint's limits are stated in.
+                let (min_deg, max_deg) = crate::starter::geometric_range(joint);
+                (-max_deg / 360.0, -min_deg / 360.0)
             })
     }
 

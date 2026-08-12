@@ -154,7 +154,7 @@ pub fn derive_reference(
             Some((
                 format!("starter-{joint_id}"),
                 (*joint_id).to_string(),
-                clamp_to_joint(*angle, joint),
+                place_angle(*angle, joint),
             ))
         })
         .collect();
@@ -167,12 +167,17 @@ pub fn derive_reference(
     // second pass retraces the same arc at a new height rather than jumping.
     let (from, to) = sector_bounds(joints, sector_turn, sector_span)?;
     let height = find_joint(joints, HEIGHT_JOINT);
-    let base_height = height.map(|joint| clamp_to_joint(80.0, joint));
+    // Geometric, because the per-pass step below is arithmetic on it. Only the
+    // value that reaches a block is converted.
+    let base_height = height.map(|joint| {
+        let (min, max) = geometric_range(joint);
+        80.0_f64.clamp(min, max)
+    });
 
     for pass in 0..passes.clamp(1, MAX_PASSES) {
         if pass > 0 {
             if let (Some(joint), Some(base)) = (height, base_height) {
-                let lowered = clamp_to_joint(base - PASS_HEIGHT_STEP * f64::from(pass), joint);
+                let lowered = place_angle(base - PASS_HEIGHT_STEP * f64::from(pass), joint);
                 blocks.push((
                     format!("reference-height-{pass}"),
                     HEIGHT_JOINT.to_string(),
@@ -252,16 +257,16 @@ fn sector_bounds(joints: &[JointConfig], sector_turn: f64, sector_span: f64) -> 
     let joint = find_joint(joints, SWEEP_JOINT)?;
     let centre = -sector_turn * 360.0;
     let half_width = sector_span * 180.0;
+    // Headings are geometric; the joint's own limits are not.
+    let (min_deg, max_deg) = geometric_range(joint);
 
     let resolve = |angle: f64| {
         // The same heading has many representations; prefer one the joint can
         // reach before clamping, which would silently aim somewhere else.
         [angle, angle + 360.0, angle - 360.0]
             .into_iter()
-            .find(|candidate| {
-                *candidate >= joint.min_angle_deg && *candidate <= joint.max_angle_deg
-            })
-            .unwrap_or_else(|| clamp_to_joint(angle, joint))
+            .find(|candidate| *candidate >= min_deg && *candidate <= max_deg)
+            .unwrap_or_else(|| angle.clamp(min_deg, max_deg))
     };
 
     let low = resolve(centre - half_width);
@@ -269,7 +274,7 @@ fn sector_bounds(joints: &[JointConfig], sector_turn: f64, sector_span: f64) -> 
     if (low - high).abs() < f64::EPSILON {
         return None;
     }
-    Some((low, high))
+    Some((place_angle(low, joint), place_angle(high, joint)))
 }
 
 /// Serialize to the Blockly workspace shape the editor loads.
@@ -301,6 +306,34 @@ fn find_joint<'a>(joints: &'a [JointConfig], joint_id: &str) -> Option<&'a Joint
     joints.iter().find(|joint| joint.id == joint_id)
 }
 
-fn clamp_to_joint(angle: f64, joint: &JointConfig) -> f64 {
-    angle.clamp(joint.min_angle_deg, joint.max_angle_deg)
+/// The joint's travel in **geometric** degrees.
+///
+/// Everything in this module reasons geometrically — `sector_bounds` derives a
+/// heading from an azimuth, `REACH_POSE` describes an arm shape — while the
+/// joint's configured limits are servo degrees. A `direction: -1` servo maps its
+/// minimum to the geometric maximum, hence the reorder.
+pub(crate) fn geometric_range(joint: &JointConfig) -> (f64, f64) {
+    match joint.servo.as_ref() {
+        None => (joint.min_angle_deg, joint.max_angle_deg),
+        Some(servo) => {
+            let low = servo.to_geometric_deg(joint.min_angle_deg);
+            let high = servo.to_geometric_deg(joint.max_angle_deg);
+            (low.min(high), low.max(high))
+        }
+    }
+}
+
+/// Clamp a geometric angle to the joint's travel and return it in the units a
+/// program carries — servo degrees wherever the joint drives a servo.
+///
+/// Every angle this module emits into a block goes through here. Emitting a
+/// geometric angle directly would be replayed as a servo command and put the arm
+/// somewhere else entirely.
+fn place_angle(angle: f64, joint: &JointConfig) -> f64 {
+    let (min, max) = geometric_range(joint);
+    let clamped = angle.clamp(min, max);
+    joint
+        .servo
+        .as_ref()
+        .map_or(clamped, |servo| servo.to_servo_deg(clamped))
 }

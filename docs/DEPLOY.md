@@ -1,4 +1,4 @@
-# Deployment — `app.hcr.rs` and `api.hcr.rs`
+# Deployment — `web.hcr.rs` and `api.hcr.rs`
 
 Public, open to anyone, as an academy experiment. That decision shapes everything
 below: there is no sign-in, and the guards that matter are the ones that hold
@@ -59,7 +59,7 @@ VITE_HCR_API_BASE_URL = https://api.hcr.rs
 `https://api.hcr.rs` only. If the API hostname changes, that file changes
 with it or the browser blocks every request.
 
-Add `app.hcr.rs` as a custom domain; Cloudflare issues the certificate.
+Add `web.hcr.rs` as a custom domain; Cloudflare issues the certificate.
 
 **Favicon:** `index.html` references `/favicon.png`. Save the site mark to
 `HCR_Simulator_Frontend/public/favicon.png` — `public/` is copied to `dist/`
@@ -172,7 +172,7 @@ nginx has `limit_req` built in.
 | --- | --- | --- |
 | `HCR_SIGNING_KEY` | **required** | HMAC key for item references, ≥32 bytes. The server refuses to start without it. |
 | `HCR_BIND` | `127.0.0.1:18623` | Loopback; Caddy fronts it. |
-| `HCR_CORS_ORIGIN` | *absent* | `https://app.hcr.rs`. Absent sends no CORS headers, which breaks the frontend. |
+| `HCR_CORS_ORIGIN` | *absent* | Comma-separated allowlist, e.g. `https://web.hcr.rs,hcr://app`. Only a listed origin is echoed back. Absent sends no CORS headers, which breaks the frontend. |
 | `HCR_USAGE_LOG` | *absent* | Path to append usage events to. Omit to collect nothing. |
 
 `HCR_SIGNING_KEY` must be **stable across restarts** — it signs the `itemRef`
@@ -249,7 +249,7 @@ curl -s https://api.hcr.rs/api/v1/time
 curl -s https://api.hcr.rs/api/v1/challenges | jq -r '.[].id'
 
 curl -si -X OPTIONS https://api.hcr.rs/api/v1/challenges \
-  -H 'Origin: https://app.hcr.rs' | grep -i access-control-allow-origin
+  -H 'Origin: https://web.hcr.rs' | grep -i access-control-allow-origin
 ```
 
 The frontend's own live suite is the better check — it drives the real client

@@ -31,6 +31,9 @@ fn joint(
         max_angle_deg: max,
         initial_angle_deg: initial,
         speed_deg_per_sec: speed,
+        // Geometric angles: these fixtures exercise the engine, not the
+        // hardware mapping.
+        servo: None,
     }
 }
 

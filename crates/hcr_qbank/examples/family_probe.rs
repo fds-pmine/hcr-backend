@@ -16,6 +16,7 @@ fn prototype() -> ChallengeDefinition {
         max_angle_deg: max,
         initial_angle_deg: initial,
         speed_deg_per_sec: speed,
+        servo: None,
     };
 
     ChallengeDefinition {

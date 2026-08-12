@@ -70,11 +70,13 @@ interface Case {
  * `docs/backend/02-DETERMINISM.md` §9. Outcomes are NOT predicted here — several
  * of these collide with the head, and recording that faithfully is the point.
  */
+// Angles are servo degrees, as everything the learner touches now is. The
+// geometric equivalent is given where a note needs it to stay legible.
 const CASES: Case[] = [
   {
     id: 'safe-single-joint',
-    note: 'baseYaw -45 -> -60, entirely inside the head-safe band',
-    program: program([setAngle('baseYaw', -60, 'a')], 1),
+    note: 'baseYaw 45 -> 30 (geometric -45 -> -60), entirely inside the head-safe band',
+    program: program([setAngle('baseYaw', 30, 'a')], 1),
   },
   {
     id: 'wait-only',
@@ -84,12 +86,12 @@ const CASES: Case[] = [
   {
     id: 'zero-duration-move',
     note: 'target equals the current angle; pins the durationMs === 0 branch',
-    program: program([setAngle('baseYaw', -45, 'a')], 1),
+    program: program([setAngle('baseYaw', 45, 'a')], 1),
   },
   {
     id: 'head-collision',
-    note: 'baseYaw sweeps toward 0 and drives the elbow into the head',
-    program: program([setAngle('baseYaw', 0, 'a')], 1),
+    note: 'baseYaw sweeps toward geometric 0 and drives the elbow into the head',
+    program: program([setAngle('baseYaw', 90, 'a')], 1),
   },
   {
     id: 'repeat-expansion',
@@ -98,7 +100,7 @@ const CASES: Case[] = [
       [
         repeat(
           3,
-          [setAngle('baseYaw', -55, 'a'), setAngle('baseYaw', -40, 'b')],
+          [setAngle('baseYaw', 35, 'a'), setAngle('baseYaw', 50, 'b')],
           'r',
         ),
       ],
@@ -110,10 +112,11 @@ const CASES: Case[] = [
     note: 'all five joints move; exercises the full kinematic chain',
     program: program(
       [
-        setAngle('baseYaw', -55, 'a'),
-        setAngle('shoulder', 20, 'b'),
-        setAngle('elbow', -120, 'c'),
-        setAngle('wrist', -40, 'd'),
+        setAngle('baseYaw', 35, 'a'),
+        setAngle('shoulder', 70, 'b'),
+        setAngle('elbow', 32.5, 'c'),
+        setAngle('wrist', 50, 'd'),
+        // Simulation-only joint, so this one stays geometric.
         setAngle('shoulderRoll', 20, 'e'),
       ],
       5,
@@ -125,10 +128,10 @@ const CASES: Case[] = [
     program: program(
       [
         setAngle('shoulderRoll', 15, 'starter-shoulder-roll'),
-        setAngle('shoulder', 80, 'starter-shoulder'),
-        setAngle('elbow', 0, 'starter-elbow'),
-        setAngle('wrist', -80, 'starter-wrist'),
-        setAngle('baseYaw', 55, 'starter-base-sweep'),
+        setAngle('shoulder', 130, 'starter-shoulder'),
+        setAngle('elbow', 152.5, 'starter-elbow'),
+        setAngle('wrist', 10, 'starter-wrist'),
+        setAngle('baseYaw', 145, 'starter-base-sweep'),
       ],
       5,
     ),
@@ -139,12 +142,12 @@ const CASES: Case[] = [
     program: program(
       [
         setAngle('shoulderRoll', 15, 'a'),
-        setAngle('shoulder', 80, 'b'),
-        setAngle('elbow', 0, 'c'),
-        setAngle('wrist', -80, 'd'),
+        setAngle('shoulder', 130, 'b'),
+        setAngle('elbow', 152.5, 'c'),
+        setAngle('wrist', 10, 'd'),
         repeat(
           3,
-          [setAngle('baseYaw', 55, 'e'), setAngle('baseYaw', -55, 'f')],
+          [setAngle('baseYaw', 145, 'e'), setAngle('baseYaw', 35, 'f')],
           'r',
         ),
       ],
@@ -158,7 +161,7 @@ const CASES: Case[] = [
       [
         repeat(
           20,
-          [setAngle('baseYaw', -60, 'a'), setAngle('baseYaw', -35, 'b')],
+          [setAngle('baseYaw', 30, 'a'), setAngle('baseYaw', 55, 'b')],
           'r',
         ),
       ],

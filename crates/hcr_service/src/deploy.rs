@@ -75,13 +75,17 @@ impl ServerConfig {
     /// | Variable | Default | Meaning |
     /// | --- | --- | --- |
     /// | `HCR_BIND` | `127.0.0.1:18623` | Listen address. |
-    /// | `HCR_CORS_ORIGIN` | none | Browser origin allowed to call this API. |
+    /// | `HCR_CORS_ORIGIN` | none | Comma-separated browser origins allowed to call this API. |
     /// | `HCR_SIGNING_KEY` | **required** | HMAC key for item references. |
     /// | `HCR_USAGE_LOG` | none | Path to append usage events to. |
     ///
     /// `HCR_CORS_ORIGIN` defaults to *absent*, meaning no CORS headers are sent.
     /// A permissive default on a scoring API is not something to ship by
-    /// accident, and a same-origin deployment needs none.
+    /// accident, and a same-origin deployment needs none. When set, it is an
+    /// allowlist: the request's own `Origin` is echoed back if it appears on the
+    /// list, and ignored otherwise. More than one is supported because the
+    /// hosted site and the desktop build have different origins and neither can
+    /// be expressed as the other.
     pub fn from_env() -> Result<Self, ConfigError> {
         let signing_key = std::env::var("HCR_SIGNING_KEY")
             .map_err(|_| ConfigError::MissingSigningKey)?

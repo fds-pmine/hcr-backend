@@ -47,11 +47,21 @@ pub fn compute_robot_pose(
 ) -> Result<RobotPose, SimError> {
     let geometry = &robot_config.geometry;
 
-    let base_yaw = degrees_to_radians(read_angle(joint_angles, "baseYaw")?);
-    let shoulder_roll_angle = degrees_to_radians(read_angle(joint_angles, "shoulderRoll")?);
-    let shoulder_angle = degrees_to_radians(read_angle(joint_angles, "shoulder")?);
-    let elbow_angle = degrees_to_radians(read_angle(joint_angles, "elbow")?);
-    let wrist_angle = degrees_to_radians(read_angle(joint_angles, "wrist")?);
+    // `joint_angles` is in servo degrees; the rotations below are geometric.
+    // The frontend converts at the same point (`computeRobotPose`), and the
+    // conformance suite is what holds the two together.
+    let read = |joint_id: &str| -> Result<f64, SimError> {
+        Ok(degrees_to_radians(read_angle(
+            robot_config,
+            joint_angles,
+            joint_id,
+        )?))
+    };
+    let base_yaw = read("baseYaw")?;
+    let shoulder_roll_angle = read("shoulderRoll")?;
+    let shoulder_angle = read("shoulder")?;
+    let elbow_angle = read("elbow")?;
+    let wrist_angle = read("wrist")?;
 
     let base = geometry.base_position;
     let shoulder: Vec3 = [
@@ -141,13 +151,30 @@ fn sin_cos(angle: f64) -> (f64, f64) {
     (libm::sin(angle), libm::cos(angle))
 }
 
-fn read_angle(joint_angles: &JointAngles, joint_id: &str) -> Result<f64, SimError> {
-    match joint_angles.get(joint_id) {
-        Some(angle) if angle.is_finite() => Ok(angle),
-        _ => Err(SimError::MissingJoint {
+fn read_angle(
+    robot_config: &RobotConfig,
+    joint_angles: &JointAngles,
+    joint_id: &str,
+) -> Result<f64, SimError> {
+    let angle = match joint_angles.get(joint_id) {
+        Some(angle) if angle.is_finite() => angle,
+        _ => {
+            return Err(SimError::MissingJoint {
+                joint_id: joint_id.into(),
+            });
+        }
+    };
+    let joint = robot_config
+        .joints
+        .iter()
+        .find(|candidate| candidate.id == joint_id)
+        .ok_or_else(|| SimError::MissingJoint {
             joint_id: joint_id.into(),
-        }),
-    }
+        })?;
+    Ok(joint
+        .servo
+        .as_ref()
+        .map_or(angle, |servo| servo.to_geometric_deg(angle)))
 }
 
 fn degrees_to_radians(degrees: f64) -> f64 {

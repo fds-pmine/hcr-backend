@@ -90,9 +90,10 @@ pub const PLAYER_NAME_HEADER: &str = "x-hcr-player-name";
 ///
 /// The single function a hotaru endpoint needs to call.
 ///
-/// `cors_allow_origin` is for browsers on a different origin — a Vite dev server
-/// on `:5173` talking to this service on `:18623`. Leave it `None` in production:
-/// the browser path there is MQTT-over-WebSocket, and a permissive
+/// `cors_allow_origin` is a comma-separated allowlist of browser origins — a
+/// Vite dev server on `:5173` talking to this service on `:18623`, the hosted
+/// site, or the desktop build's own scheme. Only an origin on the list is
+/// echoed back. Leave it `None` to send no CORS headers at all: a permissive
 /// `Access-Control-Allow-Origin` on a scoring API is not something to ship by
 /// accident.
 pub async fn handle<TS>(
@@ -103,6 +104,10 @@ pub async fn handle<TS>(
 where
     TS: hotaru_core::connection::TransportSpec,
 {
+    // Lowercase: hotaru normalizes header names on the way in and `header_str`
+    // matches exactly, so "Origin" would silently never be found.
+    let request_origin = ctx.header_str("origin").map(str::to_owned);
+    let cors_allow_origin = matching_origin(cors_allow_origin, request_origin.as_deref());
     let method = match ctx.method() {
         HttpMethod::GET => Method::Get,
         HttpMethod::POST => Method::Post,
@@ -149,6 +154,27 @@ where
     )
 }
 
+/// Pick the allowed origin to echo, if the caller's origin is one of them.
+///
+/// `configured` is a comma-separated allowlist rather than a single value
+/// because there is now more than one legitimate front end: the hosted site,
+/// and the desktop build, which loads over its own scheme and therefore has its
+/// own origin. Neither can be expressed as the other.
+///
+/// The request's `Origin` is echoed rather than the configuration reflected
+/// back verbatim, which is what a browser requires — `Access-Control-Allow-Origin`
+/// has to name the caller, and a list is not a legal value. Sending a configured
+/// origin to a caller that did not claim it, as this did before, told browsers
+/// nothing and non-browser clients something untrue.
+fn matching_origin<'a>(configured: Option<&'a str>, request_origin: Option<&str>) -> Option<&'a str> {
+    let (configured, request_origin) = (configured?, request_origin?);
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|allowed| !allowed.is_empty())
+        .find(|allowed| *allowed == request_origin)
+}
+
 fn with_cors(response: HttpResponse, allow_origin: Option<&str>) -> HttpResponse {
     match allow_origin {
         None => response,
@@ -158,7 +184,10 @@ fn with_cors(response: HttpResponse, allow_origin: Option<&str>) -> HttpResponse
             .add_header(
                 "Access-Control-Allow-Headers",
                 "Content-Type, Authorization, X-HCR-Player, X-HCR-Player-Name",
-            ),
+            )
+            // The response now varies by request origin, so a shared cache must
+            // not serve one front end's response to the other.
+            .add_header("Vary", "Origin"),
     }
 }
 
@@ -212,5 +241,48 @@ where
         let router = router.clone();
         let cors = cors_allow_origin.clone();
         Box::pin(async move { handle(&router, ctx, cors.as_deref()).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matching_origin;
+
+    #[test]
+    fn echoes_only_an_origin_on_the_list() {
+        let allowed = Some("https://web.hcr.rs,hcr://app");
+        assert_eq!(
+            matching_origin(allowed, Some("https://web.hcr.rs")),
+            Some("https://web.hcr.rs")
+        );
+        assert_eq!(matching_origin(allowed, Some("hcr://app")), Some("hcr://app"));
+        assert_eq!(matching_origin(allowed, Some("https://evil.test")), None);
+    }
+
+    #[test]
+    fn tolerates_spacing_in_the_configured_list() {
+        let allowed = Some(" https://web.hcr.rs , hcr://app ,, ");
+        assert_eq!(matching_origin(allowed, Some("hcr://app")), Some("hcr://app"));
+        // An empty entry must never match an empty or absent origin.
+        assert_eq!(matching_origin(allowed, Some("")), None);
+    }
+
+    #[test]
+    fn sends_nothing_when_unconfigured_or_when_the_caller_claims_no_origin() {
+        assert_eq!(matching_origin(None, Some("https://web.hcr.rs")), None);
+        // curl and the integration tests: no Origin, so no CORS headers. The
+        // previous behaviour returned them unconditionally, which told a browser
+        // nothing and a non-browser client something untrue.
+        assert_eq!(matching_origin(Some("https://web.hcr.rs"), None), None);
+    }
+
+    #[test]
+    fn a_prefix_is_not_a_match() {
+        // `https://web.hcr.rs.evil.test` must not pass because the allowed value
+        // is a prefix of it.
+        assert_eq!(
+            matching_origin(Some("https://web.hcr.rs"), Some("https://web.hcr.rs.evil.test")),
+            None
+        );
     }
 }
