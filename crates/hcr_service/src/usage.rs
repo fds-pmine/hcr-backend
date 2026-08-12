@@ -160,14 +160,92 @@ impl UsageEvent {
     }
 }
 
+/// Identity of the file actually open, so rotation can be noticed.
+///
+/// A path is not an identity. `rename` moves the name and leaves the inode
+/// where it was, which is why a held descriptor keeps writing into the archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileId {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+fn identify(metadata: &std::fs::Metadata) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    Some(FileId {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+/// Rotation detection is a Unix concept here; elsewhere the descriptor is
+/// simply kept, which is the previous behaviour.
+#[cfg(not(unix))]
+fn identify(_metadata: &std::fs::Metadata) -> Option<FileId> {
+    None
+}
+
+#[derive(Debug)]
+struct Sink {
+    file: File,
+    id: Option<FileId>,
+}
+
+impl Sink {
+    fn open(path: &Path) -> std::io::Result<Self> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let id = file.metadata().ok().and_then(|meta| identify(&meta));
+        Ok(Self { file, id })
+    }
+
+    /// Reopen if the descriptor no longer refers to what `path` names.
+    ///
+    /// Costs one `stat` per event. Events are one per scored submission — a
+    /// replay that already cost milliseconds of CPU — so the syscall does not
+    /// register, and it removes an entire class of silent data loss.
+    fn ensure_current(&mut self, path: &Path) -> std::io::Result<bool> {
+        // No identity to compare (non-Unix): keep what we have.
+        if self.id.is_none() {
+            return Ok(false);
+        }
+        let current = std::fs::metadata(path)
+            .ok()
+            .and_then(|meta| identify(&meta));
+        // `None` means the path is gone — rotated away without a replacement.
+        // Reopening recreates it, which is what the operator expects to find.
+        if current.is_some() && current == self.id {
+            return Ok(false);
+        }
+        *self = Sink::open(path)?;
+        Ok(true)
+    }
+}
+
 /// An append-only JSONL sink.
 ///
 /// One object per line. No rotation of its own — point `logrotate` at the file,
 /// which is what a VPS already has and does better. Every line carries `ts`, so
 /// bucketing by day is a property of the data rather than of the filename.
+///
+/// # Surviving rotation
+///
+/// The descriptor is checked against the path before every write and reopened
+/// if they have parted company.
+///
+/// Without that, a rotation that *renames* the live file — which is what
+/// logrotate does unless told `copytruncate` — leaves this process appending to
+/// the renamed inode forever. Nothing fails: the writes succeed, the archive
+/// grows, and the file at the configured path stays zero bytes. The only
+/// symptom is an empty log, discovered whenever somebody next goes looking, and
+/// the fix is a restart because a descriptor cannot be moved.
+///
+/// Depending on `copytruncate` to prevent that means depending on a config file
+/// this program does not own and cannot check. Noticing instead costs one
+/// `stat` per submission and works under every rotation scheme, including none.
 #[derive(Debug)]
 pub struct UsageLog {
-    file: Mutex<File>,
+    sink: Mutex<Sink>,
     path: PathBuf,
     /// Set after the first write failure, so a broken disk logs once, not once
     /// per request.
@@ -183,9 +261,8 @@ impl UsageLog {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
-            file: Mutex::new(file),
+            sink: Mutex::new(Sink::open(&path)?),
             path,
             reported: AtomicBool::new(false),
         })
@@ -209,13 +286,25 @@ impl UsageLog {
         line.push(b'\n');
 
         let result = self
-            .file
+            .sink
             .lock()
             .map_err(|_| std::io::Error::other("usage log poisoned"))
-            .and_then(|mut file| file.write_all(&line));
+            .and_then(|mut sink| {
+                let reopened = sink.ensure_current(&self.path)?;
+                sink.file.write_all(&line)?;
+                Ok(reopened)
+            });
 
-        if let Err(error) = result {
-            self.report(&format!("could not write: {error}"));
+        match result {
+            // Worth one line each time: it is the only evidence that rotation
+            // happened, and its absence over a long run is how you learn the
+            // detection is not firing.
+            Ok(true) => eprintln!(
+                "usage log ({}): file was rotated, reopened it.",
+                self.path.display()
+            ),
+            Ok(false) => {}
+            Err(error) => self.report(&format!("could not write: {error}")),
         }
     }
 
@@ -227,5 +316,107 @@ impl UsageLog {
                 self.path.display()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UsageEvent, UsageLog};
+    use std::path::PathBuf;
+
+    fn event(ts: u64) -> UsageEvent {
+        UsageEvent::MatchResults {
+            ts,
+            match_id: format!("m{ts}"),
+            challenge_id: "neat-short-cap".to_string(),
+            challenge_version: 1,
+            players: 1,
+            submitted: 1,
+            top_completion: 100.0,
+        }
+    }
+
+    /// A directory of our own, so a failing test cannot take another's data
+    /// with it. No `tempfile` dependency for three tests.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hcr-usage-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn lines(path: &std::path::Path) -> usize {
+        std::fs::read_to_string(path)
+            .map(|text| text.lines().count())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn appends_one_line_per_event() {
+        let dir = scratch("append");
+        let path = dir.join("usage.jsonl");
+        let log = UsageLog::open(&path).expect("open");
+        log.record(&event(1));
+        log.record(&event(2));
+        assert_eq!(lines(&path), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn follows_the_path_when_rotation_renames_the_file() {
+        let dir = scratch("rename");
+        let path = dir.join("usage.jsonl");
+        let rotated = dir.join("usage.jsonl.1");
+
+        let log = UsageLog::open(&path).expect("open");
+        log.record(&event(1));
+
+        // Exactly what logrotate does without `copytruncate`.
+        std::fs::rename(&path, &rotated).expect("rotate");
+        log.record(&event(2));
+
+        // The archive keeps only what preceded rotation, and the live path has
+        // the rest. Before the descriptor check both lines landed in `.1` and
+        // `usage.jsonl` did not exist at all.
+        assert_eq!(lines(&rotated), 1, "archive should not have grown");
+        assert_eq!(lines(&path), 1, "live path should have the later event");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keeps_writing_through_copytruncate() {
+        let dir = scratch("truncate");
+        let path = dir.join("usage.jsonl");
+
+        let log = UsageLog::open(&path).expect("open");
+        log.record(&event(1));
+
+        // `copytruncate` preserves the inode, so nothing should be reopened —
+        // and `O_APPEND` resumes at the new end, which is zero.
+        std::fs::copy(&path, dir.join("usage.jsonl.1")).expect("copy");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("truncate")
+            .set_len(0)
+            .expect("truncate");
+
+        log.record(&event(2));
+        assert_eq!(lines(&path), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recreates_a_log_that_was_deleted_outright() {
+        let dir = scratch("unlink");
+        let path = dir.join("usage.jsonl");
+
+        let log = UsageLog::open(&path).expect("open");
+        log.record(&event(1));
+        std::fs::remove_file(&path).expect("unlink");
+
+        log.record(&event(2));
+        assert_eq!(lines(&path), 1, "should have recreated and written");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

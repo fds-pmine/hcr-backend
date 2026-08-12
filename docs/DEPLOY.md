@@ -216,9 +216,22 @@ schema, and the reasoning, is in `crates/hcr_service/src/usage.rs`.
 "probably the same browser", nothing stronger. Say so in any write-up that uses
 this data.
 
-Rotation is logrotate's job (`deploy/hcr-usage.logrotate`, `copytruncate` because
-the server holds the file open). A write failure is reported once to the journal
-and then swallowed: losing telemetry must never take the service down.
+Rotation is logrotate's job (`deploy/hcr-usage.logrotate`). The server holds the
+file open for the life of the process, so it checks its descriptor against the
+path before every write and reopens when they have parted company — a rotation
+that renames the live file is survived without a restart, and logs one
+`file was rotated, reopened it` line to the journal when it happens.
+
+`copytruncate` is still in the shipped config as the cheaper path (no reopen at
+all), but it is no longer load-bearing. A write failure is reported once to the
+journal and then swallowed: losing telemetry must never take the service down.
+
+**If you find `usage.jsonl` at zero bytes** while a numbered archive keeps
+growing, that is the pre-fix failure: an older build is still appending to the
+renamed inode. Check with `sudo ls -l /proc/$(pidof hcr-server)/fd | grep usage`.
+The data is in whichever archive the descriptor points at — keep it — and a
+restart is the only way to move a descriptor. A telltale sign is an archive with
+a *newer* mtime than `.1`, which normal rotation can never produce.
 
 Quick look at what has been collected:
 

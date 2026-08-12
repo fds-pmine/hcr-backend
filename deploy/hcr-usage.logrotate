@@ -7,8 +7,16 @@
 # filename, and logrotate is already on the box and better at this.
 #
 # `copytruncate` because hcr-server holds the file open for the life of the
-# process. Without it, rotation would rename the file and the server would keep
-# writing to the renamed one — the classic silent-loss failure.
+# process. Without it, rotation renames the file and a naive writer keeps
+# appending to the renamed inode — the classic silent-loss failure, whose only
+# symptom is a zero-byte log nobody notices for a month.
+#
+# The server no longer depends on this: it compares its descriptor against the
+# path before every write and reopens if rotation moved the file underneath it.
+# `copytruncate` is kept because it is the cheaper path — the inode survives, so
+# there is nothing to reopen — but the correctness of the log no longer rests on
+# a config file the program cannot see. If you replace this file with your own,
+# the log still works.
 
 /var/lib/hcr/usage.jsonl {
 	daily
