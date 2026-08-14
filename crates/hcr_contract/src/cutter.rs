@@ -38,6 +38,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{JointId, Vec3};
 
+/// Which editor a program was written in.
+///
+/// Not a rendering detail — it changes what a command *is*. One servo command
+/// drives a joint to an angle; one Cutter Grid command crosses a single lattice
+/// cell. The same challenge attempted in the two modes is two different tasks
+/// with two different difficulties, which is why SPEC v0.3 §15.1 says their
+/// scores are not to be compared for fairness, and why this has to travel on the
+/// wire rather than be inferred.
+///
+/// `Servo` is the reference: it is the default, it has all the history, and
+/// every row and round that predates Cutter Grid means it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProgrammingMode {
+    /// Joint angles. The default.
+    #[default]
+    Servo,
+    /// Tool tip through the lattice.
+    CutterGrid,
+}
+
+impl ProgrammingMode {
+    /// Every mode, in a stable order.
+    pub const ALL: [ProgrammingMode; 2] = [ProgrammingMode::Servo, ProgrammingMode::CutterGrid];
+
+    /// Stable identifier, matching the wire form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProgrammingMode::Servo => "servo",
+            ProgrammingMode::CutterGrid => "cutter-grid",
+        }
+    }
+
+    /// Whether this is the reference mode, which is also what an absent value
+    /// means everywhere the field is skipped.
+    pub fn is_default(&self) -> bool {
+        matches!(self, ProgrammingMode::Servo)
+    }
+}
+
 /// Planner build that produced a V2 plan.
 ///
 /// Pinned rather than free text: `cutter-grid-dls-v1` and `cutter-grid-ladder-v2`

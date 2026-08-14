@@ -227,6 +227,9 @@ pub struct ChallengeMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generator: Option<GeneratorProvenance>,
     pub hardware_compatible: bool,
+    /// Editors this item can be attempted in. Defaults to servo alone.
+    #[serde(default)]
+    pub programming_modes: Vec<ProgrammingMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +267,27 @@ pub struct SubmissionCreate {
 //
 // Implemented for real in `crates/hcr_contract/src/cutter.rs`; this is the
 // sketch. Additive — the frozen `Program` and `RobotCommand` are untouched.
+
+/// Which editor a program was written in.
+///
+/// One servo command drives a joint; one Cutter Grid command crosses a lattice
+/// cell. The same challenge is a different task with a different difficulty in
+/// each, so this travels rather than being inferred. `Servo` is the reference.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProgrammingMode {
+    #[default]
+    Servo,
+    CutterGrid,
+}
+
+impl ProgrammingMode {
+    /// Whether this is the reference mode, which is also what an absent value
+    /// means everywhere the field is skipped.
+    pub fn is_default(&self) -> bool {
+        matches!(self, ProgrammingMode::Servo)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -428,6 +452,9 @@ pub struct ReplayInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmissionResult {
+    /// Which engine produced this score. Skipped when servo.
+    #[serde(default, skip_serializing_if = "ProgrammingMode::is_default")]
+    pub programming_mode: ProgrammingMode,
     pub submission_id: String,
     pub challenge_id: String,
     pub challenge_version: u32,

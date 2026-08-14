@@ -186,6 +186,13 @@ export interface ChallengeMeta {
   generator?: { familyId: string; seed: number; params: Record<string, number>; version: string };
   /** Whether this challenge can run on physical hardware (shoulderRoll constraint). */
   hardwareCompatible: boolean;
+  /**
+   * Editors this item can be attempted in. Defaults to `['servo']` when absent.
+   *
+   * Cutter Grid needs a certified planner profile per challenge — a proof that the lattice is
+   * reachable and that a reference program achieves the target — so most items are servo-only.
+   */
+  programmingModes?: ProgrammingMode[];
 }
 
 export interface ChallengeDefinitionDto extends ChallengeDefinition {
@@ -230,6 +237,14 @@ export interface SubmissionCreate {
 //
 // Mirrors `src/features/cutter-grid/types.ts`. A separate, additive family: the frozen v1
 // `Program` and `RobotCommand` are untouched, as SPEC v0.3 §15.4 requires.
+
+/**
+ * Which editor a program was written in. Not a rendering detail: one servo command drives a
+ * joint, one Cutter Grid command crosses a lattice cell, so the same challenge is a different
+ * task with a different difficulty in each. `servo` is the reference and is what an absent
+ * value means everywhere this is optional.
+ */
+export type ProgrammingMode = 'servo' | 'cutter-grid';
 
 export type CutterGridDirection =
   | 'right' | 'left' | 'up' | 'down' | 'forward' | 'backward';
@@ -319,6 +334,8 @@ export interface SubmissionResult {
   challengeId: string;
   challengeVersion: number;
   status: 'completed' | 'error';
+  /** Which engine produced this score. Absent means `servo`. */
+  programmingMode?: ProgrammingMode;
   /** Authoritative. Produced by server replay, not by the client. */
   score: ScoreResult;
   metrics: ProgramMetrics;
@@ -356,7 +373,15 @@ export interface SessionSnapshot {
   terminationReason?: string;
 }
 
-export interface SessionStart { blueprintId?: string; initialTheta?: number }
+export interface SessionStart {
+  /**
+   * Which editor this session is practised in. Absent means `servo`.
+   *
+   * A session runs in one mode throughout and its ability estimate belongs to that mode alone,
+   * mirroring the rule that match play never touches θ_solo. `initialTheta` must come from the
+   * same mode. See 07-CALIBRATION.md §11.
+   */
+  programmingMode?: ProgrammingMode; blueprintId?: string; initialTheta?: number }
 
 export interface NextItem {
   /** Opaque HMAC token binding (sessionId, bankIndex, challengeId, version, issuedAt). */
@@ -480,6 +505,13 @@ export interface MatchConfig {
   challengeRef?: { challengeId: string; version: number };
   /** Per-player submission rate limit; guards replay capacity. */
   minSubmitIntervalMs: number;
+  /**
+   * Which editor the round is played in; everyone uses the same one. Absent means `servo`.
+   *
+   * A submission scored in another mode is refused with `WRONG_PROGRAMMING_MODE`, and creation
+   * fails if the challenge does not support it. See 06-MULTIPLAYER.md §3.
+   */
+  programmingMode?: ProgrammingMode;
 }
 
 export interface MatchState {
@@ -498,9 +530,15 @@ export interface MatchSubmissionAck {
   submissionId: string;
   accepted: boolean;
   serverReceivedAt: number;
-  /** Set when rejected: 'after-deadline' | 'rate-limited' | 'not-participant' | 'wrong-phase'. */
-  rejectedReason?: string;
+  /** Set when rejected. */
+  rejectedReason?: MatchRejection;
 }
+
+export type MatchRejection =
+  | 'after-deadline' | 'rate-limited' | 'not-participant' | 'wrong-phase'
+  | 'wrong-challenge'
+  /** Right challenge, wrong editor — the fix is to switch modes, not to find another round. */
+  | 'wrong-programming-mode';
 
 export interface MatchResultRow {
   rank: number;
@@ -519,6 +557,8 @@ export interface MatchResults {
   challengeId: string;
   challengeVersion: number;
   rankBy: RankBy;
+  /** The round is single-mode, so this applies to every row. Absent means `servo`. */
+  programmingMode?: ProgrammingMode;
   rows: MatchResultRow[];
 }
 

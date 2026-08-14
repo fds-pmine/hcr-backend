@@ -213,7 +213,7 @@ that ignores it still gets a valid v1 challenge.
 
 | `kind` | Payload |
 | --- | --- |
-| `session.start.req` / `.res` | `{ blueprintId?, initialTheta? }` / `SessionSnapshot` |
+| `session.start.req` / `.res` | `{ blueprintId?, initialTheta?, programmingMode? }` / `SessionSnapshot` |
 | `session.next.req` / `.res` | `{ sessionId }` / `NextItem` |
 | `session.respond.req` / `.res` | `{ sessionId, itemRef, submissionId }` / `ResponseOutcome` |
 | `session.finalize.req` / `.res` | `{ sessionId }` / `SessionResultDto` |
@@ -243,7 +243,7 @@ active ──(next)──> awaiting-response ──(respond)──> active
 
 | `kind` | Payload |
 | --- | --- |
-| `match.create.req` / `.res` | `{ challengeRef?, durationMs, rankBy, maxPlayers }` / `MatchState` |
+| `match.create.req` / `.res` | `{ challengeRef?, durationMs, rankBy, maxPlayers, programmingMode? }` / `MatchState` |
 | `match.join.req` / `.res` | `{ matchId }` / `MatchState` |
 | `match.leave.req` | `{ matchId }` |
 | `match.time.req` / `.res` | `{ clientSentAt }` / `{ clientSentAt, serverTime }` |

@@ -39,7 +39,9 @@
 //! use hcr_qbank::{
 //!     BankItem, CatalogSnapshot, HcrDynamicBank, OutcomeStore, SessionConfig, build_session,
 //! };
-//! use hcr_contract::{CalibrationState, ChallengeMeta, ItemParameters, SkillDimension};
+//! use hcr_contract::{
+//!     CalibrationState, ChallengeMeta, ItemParameters, ProgrammingMode, SkillDimension,
+//! };
 //!
 //! let meta = |b: f64| ChallengeMeta {
 //!     version: 1,
@@ -50,6 +52,7 @@
 //!     mastery_threshold: 0.5,
 //!     generator: None,
 //!     hardware_compatible: true,
+//!     programming_modes: vec![ProgrammingMode::Servo],
 //! };
 //!
 //! let catalog = CatalogSnapshot::new(vec![

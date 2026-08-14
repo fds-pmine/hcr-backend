@@ -76,16 +76,11 @@ use serde::{Deserialize, Serialize};
 /// them would fit item difficulty against a mixture of two different tasks and
 /// call the result one number. SPEC v0.3 §15.1 already says the scores are not
 /// to be compared for fairness; this is what lets an analysis honour that.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProgrammingMode {
-    /// Joint angles. The default, and what every row written before this field
-    /// existed means.
-    #[default]
-    Servo,
-    /// Tool tip through the lattice.
-    CutterGrid,
-}
+///
+/// Re-exported rather than defined here: it is on the wire now (rounds declare
+/// one, sessions declare one, results report one), and a second definition would
+/// be free to drift from the contract's.
+pub use hcr_contract::ProgrammingMode;
 
 /// One recorded interaction.
 ///
@@ -143,6 +138,12 @@ pub enum UsageEvent {
         session_id: String,
         /// Which item was answered.
         challenge_id: String,
+        /// Which editor the session is practised in.
+        ///
+        /// θ is per-mode, so a row without this is a servo row — the only kind
+        /// that existed when the field did not.
+        #[serde(default, skip_serializing_if = "is_servo")]
+        mode: ProgrammingMode,
         /// Raw score before the mastery remap.
         raw_score: f64,
         /// Whether it counted as correct after remapping.
@@ -163,6 +164,10 @@ pub enum UsageEvent {
         challenge_id: String,
         /// At which version.
         challenge_version: u32,
+        /// Which editor the round was played in. A round is single-mode, so this
+        /// applies to every entry in it.
+        #[serde(default, skip_serializing_if = "is_servo")]
+        mode: ProgrammingMode,
         /// How many took part.
         players: usize,
         /// How many got an attempt in before the deadline.
@@ -174,7 +179,7 @@ pub enum UsageEvent {
 
 /// Serde needs a path, not a closure, to decide whether to skip a field.
 fn is_servo(mode: &ProgrammingMode) -> bool {
-    matches!(mode, ProgrammingMode::Servo)
+    mode.is_default()
 }
 
 impl UsageEvent {
@@ -506,6 +511,7 @@ mod tests {
             match_id: format!("m{ts}"),
             challenge_id: "neat-short-cap".to_string(),
             challenge_version: 1,
+            mode: ProgrammingMode::Servo,
             players: 1,
             submitted: 1,
             top_completion: 100.0,

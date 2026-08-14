@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
+use crate::cutter::ProgrammingMode;
 use crate::domain::ChallengeDefinition;
 
 /// Stable identifier of a bank item.
@@ -154,6 +155,24 @@ pub struct ChallengeMeta {
     pub generator: Option<GeneratorProvenance>,
     /// Whether the physical arm can actually run this challenge.
     pub hardware_compatible: bool,
+    /// Editors this item can be attempted in.
+    ///
+    /// Not every challenge supports every mode, and the asymmetry is structural
+    /// rather than editorial: Cutter Grid needs a *certified planner profile* —
+    /// a proof that the lattice is reachable, that entry cuts nothing, and that
+    /// a reference program achieves the target — which has to be generated and
+    /// checked per challenge (SPEC v0.3 §15.5). A challenge without one is
+    /// servo-only, and offering it in Cutter Grid would produce a task nobody
+    /// can complete.
+    ///
+    /// Defaults to servo alone, which is what every item written before Cutter
+    /// Grid reached the backend supports.
+    #[serde(default = "servo_only")]
+    pub programming_modes: Vec<ProgrammingMode>,
+}
+
+fn servo_only() -> Vec<ProgrammingMode> {
+    alloc::vec![ProgrammingMode::Servo]
 }
 
 impl ChallengeMeta {
@@ -168,7 +187,13 @@ impl ChallengeMeta {
             mastery_threshold: 0.5,
             generator: None,
             hardware_compatible: true,
+            programming_modes: servo_only(),
         }
+    }
+
+    /// Whether this item may be attempted in `mode`.
+    pub fn supports(&self, mode: ProgrammingMode) -> bool {
+        self.programming_modes.contains(&mode)
     }
 }
 

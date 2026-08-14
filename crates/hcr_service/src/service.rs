@@ -272,6 +272,7 @@ impl HcrService {
             challenge_id: request.challenge_id,
             challenge_version: request.challenge_version,
             status,
+            programming_mode: mode,
             score: outcome.score,
             metrics: outcome.metrics,
             result_voxels_hash: outcome.result_voxels_hash.clone(),
@@ -337,7 +338,9 @@ impl HcrService {
 
     /// Open an adaptive session.
     pub async fn start_session(&self, request: SessionStart) -> ServiceResult<SessionSnapshot> {
-        let snapshot = self.catalog.snapshot()?;
+        // Only items playable in this mode, so adaptive selection chooses from
+        // what it can actually serve.
+        let snapshot = self.catalog.snapshot_for(request.programming_mode)?;
         if snapshot.is_empty() {
             return Err(ServiceError::BankExhausted);
         }
@@ -359,6 +362,7 @@ impl HcrService {
                     initial_theta: request.initial_theta.unwrap_or(0.0),
                     config: self.config.session,
                     seed,
+                    programming_mode: request.programming_mode,
                 },
                 bank,
                 outcomes,
@@ -413,7 +417,12 @@ impl HcrService {
             .sessions
             .get(&request.session_id, self.now())
             .await?
-            .respond(claims, request.submission_id, raw_score)
+            .respond(
+                claims,
+                request.submission_id,
+                raw_score,
+                submission.programming_mode,
+            )
             .await?;
 
         // The ability trajectory: one row per response, so a session can be
@@ -422,6 +431,9 @@ impl HcrService {
             ts: self.now(),
             session_id: request.session_id.clone(),
             challenge_id,
+            // The session refused any other mode above, so this is the
+            // session's mode as much as the submission's.
+            mode: submission.programming_mode,
             raw_score: outcome.raw_score,
             correct: outcome.correct,
             theta: outcome.theta,
@@ -496,15 +508,31 @@ impl HcrService {
         let challenge = match &config.challenge_ref {
             Some(pinned) => {
                 // Fail now if it does not exist, rather than at reveal time.
-                self.catalog
+                let dto = self
+                    .catalog
                     .get(&pinned.challenge_id, Some(pinned.version))?;
+                // Same reasoning, one step further: a round pinned to a
+                // challenge that cannot be played in the round's mode is a lobby
+                // nobody can submit into, and the players would only find that
+                // out at T0 when the challenge is finally revealed.
+                if !dto.meta.supports(config.programming_mode) {
+                    return Err(ServiceError::ProgramInvalid {
+                        message: format!(
+                            "Challenge \"{}\" cannot be played in {} mode.",
+                            pinned.challenge_id,
+                            config.programming_mode.as_str()
+                        ),
+                        field: None,
+                    });
+                }
                 pinned.clone()
             }
             None => {
                 // Not `list()[0]`: a listing is ordered for humans, and taking
                 // its head made the item a round ran on an accident of the
                 // alphabet. `pick_for_match` chooses for a reason.
-                let (challenge_id, version) = self.catalog.pick_for_match()?;
+                let (challenge_id, version) =
+                    self.catalog.pick_for_match(config.programming_mode)?;
                 MatchChallengeRef {
                     challenge_id,
                     version,
@@ -566,6 +594,7 @@ impl HcrService {
             match_id: results.match_id.clone(),
             challenge_id: results.challenge_id.clone(),
             challenge_version: results.challenge_version,
+            mode: results.programming_mode,
             players: results.rows.len(),
             submitted: results
                 .rows

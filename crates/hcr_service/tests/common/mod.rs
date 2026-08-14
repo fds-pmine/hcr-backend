@@ -94,6 +94,7 @@ pub fn challenge(id: &str, version: u32, difficulty: f64) -> ChallengeDefinition
             mastery_threshold: 0.5,
             generator: None,
             hardware_compatible: true,
+            programming_modes: vec![ProgrammingMode::Servo],
         },
     }
 }

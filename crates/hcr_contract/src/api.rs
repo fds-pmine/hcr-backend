@@ -8,6 +8,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
+use crate::cutter::ProgrammingMode;
 use crate::domain::{Program, ProgramMetrics, ScoreResult, ScoringConfig, Terminal};
 use crate::wire::HcrError;
 
@@ -141,6 +142,13 @@ pub struct SubmissionResult {
     pub challenge_version: u32,
     /// Completed or halted.
     pub status: SubmissionStatus,
+    /// Which editor wrote the program that was scored.
+    ///
+    /// Skipped when servo, so a servo result is byte-identical to what earlier
+    /// builds returned. A round reads it to refuse a submission written in a
+    /// mode the round is not being played in.
+    #[serde(default, skip_serializing_if = "ProgrammingMode::is_default")]
+    pub programming_mode: ProgrammingMode,
     /// The score of record.
     pub score: ScoreResult,
     /// Program size and timing.
@@ -164,8 +172,25 @@ pub struct SessionStart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blueprint_id: Option<String>,
     /// Starting ability estimate.
+    ///
+    /// Must come from the **same** programming mode this session runs in. The
+    /// two modes measure different abilities, so seeding a Cutter Grid session
+    /// with a servo θ would start the search in the wrong place and take several
+    /// items to recover — the exact cost adaptive selection exists to avoid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_theta: Option<f64>,
+    /// Which editor this session is practised in.
+    ///
+    /// A session runs in one mode throughout. The ability it estimates belongs
+    /// to that mode and to no other, mirroring the rule that match play never
+    /// touches θ_solo ([`07-CALIBRATION.md`] §2): same library, same scale,
+    /// different condition.
+    ///
+    /// Only items declaring support are served, which today means a Cutter Grid
+    /// session has a very small bank — one challenge ships with a certified
+    /// planner profile.
+    #[serde(default, skip_serializing_if = "ProgrammingMode::is_default")]
+    pub programming_mode: ProgrammingMode,
 }
 
 /// Where a session is in its lifecycle.

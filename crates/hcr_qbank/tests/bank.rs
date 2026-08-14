@@ -6,7 +6,9 @@ use arona::qbank::{QBankError, QuestionBank};
 use arona::selection::SelectionHints;
 use arona::selection::selectors::MaxInfoParams;
 use arona::{Ability, RenderFormat};
-use hcr_contract::{CalibrationState, ChallengeMeta, ItemParameters, SkillDimension};
+use hcr_contract::{
+    CalibrationState, ChallengeMeta, ItemParameters, ProgrammingMode, SkillDimension,
+};
 use hcr_qbank::*;
 
 fn meta(
@@ -27,6 +29,7 @@ fn meta(
         mastery_threshold: 0.5,
         generator: None,
         hardware_compatible: true,
+        programming_modes: vec![ProgrammingMode::Servo],
     }
 }
 

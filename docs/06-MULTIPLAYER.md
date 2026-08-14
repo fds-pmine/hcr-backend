@@ -53,11 +53,32 @@ stateDiagram-v2
 | Resubmission allowed, best counts | Unlimited submissions until close; the server keeps the best by `rankBy` | Punishing a player for a lag spike or a bad first attempt |
 | IR-only submission | Program IR is submitted; the server replays it ([`02`](02-DETERMINISM.md) §3) | Editing the score in devtools |
 | Identical seeded challenge | Same item and seed for all participants, revealed at T0 | Early or easier item for some players |
+| Single programming mode | The round declares servo or `cutter-grid`; a submission scored in the other is refused with `WRONG_PROGRAMMING_MODE` | Winning by picking the easier editor for that challenge |
 | Membership-scoped topics | Only joined participants may subscribe to the match topic | Reading rivals' events from outside the match |
 | Per-player rate limit | Cap submissions (e.g. 1 per 2 s per player) | Brute-forcing the target by flooding replays |
 
 The rate limit matters more than it looks: because the server returns nothing during the round, a player
 cannot binary-search the target — but without a cap they could still burn replay capacity for everyone.
+
+### Why a round is single-mode
+
+Servo and Cutter Grid are not the same task on the same challenge — Cutter Grid solves the inverse
+kinematics and head avoidance for the player, which is most of what the servo version tests, and replaces it
+with route-finding ([`07-CALIBRATION.md`](07-CALIBRATION.md) §11). Ranking the two against each other would
+be ranking two different exercises and publishing the result as one standing, which SPEC v0.3 §15.1 rules
+out.
+
+So the mode belongs to the round, not the player: `MatchConfig.programmingMode`, declared at creation and
+enforced on every submission. Two related rules fall out of it:
+
+- **Creation fails** if the pinned challenge does not support the round's mode, and unpinned selection only
+  considers challenges that do. Cutter Grid needs a certified planner profile per challenge, so most items
+  are servo-only; a lobby on one of them would be a round nobody could submit into, discovered at T0.
+- **`MatchResults` reports the mode**, because a table of scores is only meaningful next to the task it
+  ranks.
+
+The check reads the mode off the *scored result* — whichever engine actually produced the score — not off
+the request, so a client cannot claim one mode and submit the other.
 
 ## 4. The lag disadvantage, and how to mostly remove it
 

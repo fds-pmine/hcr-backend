@@ -3,6 +3,11 @@
 Solo (adaptive) and match (competitive) produce responses to the **same items** under **different
 conditions**. Merging them naively corrupts the bank. This document defines what updates from where.
 
+> **Two senses of "mode".** This document was written about the *condition* an item is attempted under —
+> solo or match — and §1–§9 are about that. Cutter Grid adds a second, independent facet: the **programming
+> mode** the item is attempted in, servo or `cutter-grid`. They compose rather than compete, and §11 covers
+> the second one. Where "mode" appears unqualified below it means the condition.
+
 ## 1. Why the two modes are not interchangeable
 
 | | Solo / CAT | Competitive round |
@@ -227,3 +232,86 @@ IRTParameters::new(
 Getting that one line wrong — passing a difficulty estimated from match data into the solo bank — is the
 single most likely way to silently corrupt every ability estimate in the system. It deserves a named
 constructor and a test.
+
+## 11. The second facet: programming mode
+
+Cutter Grid introduces a distinction the sections above do not cover. Solo and match are the same *task*
+under different **conditions**; servo and Cutter Grid are different **tasks** on the same challenge.
+
+| | Servo Angles | Cutter Grid |
+| --- | --- | --- |
+| One command is | one joint driven to an angle | one lattice cell crossed |
+| The learner reasons about | which joint, and how far | where the tool should go |
+| Inverse kinematics | the learner's problem | solved for them at compile time |
+| Head avoidance | the learner's problem | refused before the program runs |
+| Reference program | 5 joint moves | 5 blocks expanding to 22 cells |
+
+The same challenge is not equally hard in the two. Cutter Grid removes the kinematic reasoning that is most
+of what a servo challenge tests, and replaces it with spatial route-finding. SPEC v0.3 §15.1 already says
+their scores are not to be compared for fairness; this section says what that means for the bank.
+
+### 11.1 The model extends the same way
+
+Programming mode is a facet exactly like condition, so it enters exactly like δ:
+
+```
+P(success | θ_p, item i, condition c, programming mode g)
+    = 1 / (1 + exp( −a_i · (θ_p − b_i − δ_c − γ_g) ))
+
+γ_servo       ≡ 0            (reference — the default mode, and all the history)
+γ_cutter-grid  = estimated
+```
+
+### 11.2 …and it is not identified today
+
+γ is confounded with `b_i` for any item that only ever appears in one programming mode, by the same argument
+as §4. The fix is the same too — linking items served in **both** — and here the linking design is unusually
+favourable: a challenge that supports both modes is attempted on the *identical* hairstyle, geometry and
+target, so the two attempts differ in nothing but the editor. That is a cleaner common-item design than
+solo/match equating gets.
+
+The obstacle is supply. Cutter Grid requires a **certified planner profile** per challenge — a proof that
+the lattice is reachable, that entry cuts nothing, and that a reference program achieves the target
+(SPEC v0.3 §15.5) — and generating one is an expensive offline step the item generator does not perform.
+**One** shipped challenge has such a profile. §4 asks for ≥ 15 linking items spread across the difficulty
+range.
+
+So γ is **not estimable**, and the honest consequence is §4's own fallback: pretending otherwise would put a
+number on the wrong scale and propagate it into every estimate downstream.
+
+### 11.3 What the implementation therefore does
+
+**Ability is tracked per programming mode**, exactly as θ_solo and θ_match are tracked per condition:
+
+| Quantity | Updated by servo | Updated by Cutter Grid |
+| --- | --- | --- |
+| θ_servo | ✅ | ❌ never |
+| θ_cutter-grid | ❌ never | ✅ |
+| Item difficulty `b` | ✅ | ❌ **not yet** — needs γ, which needs linking items |
+| γ | — (γ_servo ≡ 0) | ⛔ unestimated |
+
+Enforced rather than documented:
+
+- A session declares its programming mode at `session.start` and keeps it for its lifetime. Its bank is
+  filtered to items declaring support, so adaptive selection chooses from what it can actually serve — a
+  bank containing unservable items would keep picking the most informative one, be refused, and quietly fall
+  back to a worse choice.
+- `session.respond` refuses a submission scored in another mode. That is what makes "θ is per-mode" a
+  property of the system rather than a convention.
+- `initialTheta` must come from the same mode. Seeding a Cutter Grid session with a servo θ starts the
+  search in the wrong place and costs several items to recover — the exact cost adaptive selection exists to
+  avoid.
+- A round declares one mode and refuses submissions written in another
+  ([`06-MULTIPLAYER.md`](06-MULTIPLAYER.md) §3). A mixed round would rank two different tasks against each
+  other and call the result a standing.
+- Every usage row carries its mode, so the response data needed to estimate γ **is being collected now**,
+  against the day there are enough profiled challenges to use it.
+
+### 11.4 What would unblock it
+
+In order: generate certified profiles for ≥ 15 challenges spread across the difficulty range and across
+families; serve them in both modes to overlapping populations; estimate γ from those; then, and only then,
+let Cutter Grid responses update `b`.
+
+Until that happens the two modes are two parallel measurements that share a bank and a scoring function but
+not a scale — which is a coherent thing to be, and much better than one contaminated measurement.

@@ -39,7 +39,7 @@ pub use cutter::{
     CUTTER_GRID_LADDER_PLANNER_VERSION, CUTTER_TRAJECTORY_PLAN_VERSION, CutterGridAction,
     CutterGridCoord, CutterGridDirection, CutterGridNode, CutterGridPlanningDiagnostics,
     CutterGridProgram, CutterGridSubmission, CutterTrajectoryPlan, CutterTrajectoryStep,
-    CutterTrajectoryStepKind, CutterTrajectoryWaypoint,
+    CutterTrajectoryStepKind, CutterTrajectoryWaypoint, ProgrammingMode,
 };
 pub use domain::{
     AllowedBlockType, Axis, ChallengeDefinition, HairstyleDefinition, JointConfig, JointId, Program,

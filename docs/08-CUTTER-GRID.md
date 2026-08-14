@@ -190,9 +190,24 @@ Deliberately untouched, per SPEC v0.3 §15.4:
 - Servo `Program`, `RobotCommand` and `ProgramNode` — frozen, and not extended to carry lattice moves.
 - `ScoreResult`, `ProgramMetrics`, `SubmissionResult` — one shape for both modes, so everything downstream
   is indifferent to which engine ran.
-- Sessions, matches and the adaptive bank. Whether Cutter Grid submissions should feed θ estimation is a
-  measurement question, not a plumbing one: the modes are not on a common difficulty scale
-  ([`07-CALIBRATION.md`](07-CALIBRATION.md)), and until they are linked, mixing them would corrupt the
-  estimate rather than enrich it.
 - The frontend. Submit stays disabled in Cutter Grid mode and scoring stays local until the server has been
   observed agreeing with the browser on real programs.
+
+## 10. Sessions and rounds
+
+Both accept Cutter Grid, and both are **single-mode**.
+
+| | Rule |
+| --- | --- |
+| Round | `MatchConfig.programmingMode` is declared at creation; a submission scored in another mode is refused with `WrongProgrammingMode`. Creation fails if the challenge does not support the mode, and unpinned selection only considers challenges that do. |
+| Session | `SessionStart.programmingMode` is fixed for the session's lifetime. The bank is filtered to items declaring support, and `session.respond` refuses a submission scored in another mode. |
+| `ChallengeMeta` | `programmingModes` lists what an item can be attempted in. Defaults to servo alone — Cutter Grid needs a certified planner profile, which the item generator does not produce. |
+
+The ability estimate is **per programming mode**, mirroring the existing rule that match play never touches
+θ_solo: same library, same scale, different task. That is not a simplification pending better plumbing — it
+is what the measurement model permits today. Putting both modes on one difficulty scale needs a mode offset
+γ, γ needs linking items served in both, and exactly one shipped challenge has a certified profile against
+the ≥ 15 the design asks for. The rules above are what stops a Cutter Grid attempt silently moving a servo
+ability. Full reasoning and what would unblock it: [`07-CALIBRATION.md`](07-CALIBRATION.md) §11.
+
+Every usage row carries its mode, so the responses needed to estimate γ are being collected now.

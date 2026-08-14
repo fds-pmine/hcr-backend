@@ -673,7 +673,7 @@ fn an_unpinned_round_lands_on_an_authored_challenge() {
     catalog.insert(common::challenge("neat-short-cap", 1, 0.0)).unwrap();
 
     assert_eq!(
-        catalog.pick_for_match().unwrap(),
+        catalog.pick_for_match(ProgrammingMode::Servo).unwrap(),
         ("neat-short-cap".to_string(), 1)
     );
 }
@@ -686,14 +686,14 @@ fn a_round_may_use_a_provisional_item_but_never_a_retired_one() {
     let catalog = CatalogStore::new();
     catalog.insert(generated_dto("cap-trim-aaa", CalibrationState::Provisional)).unwrap();
     assert_eq!(
-        catalog.pick_for_match().unwrap(),
+        catalog.pick_for_match(ProgrammingMode::Servo).unwrap(),
         ("cap-trim-aaa".to_string(), 1)
     );
 
     let retired = CatalogStore::new();
     retired.insert(generated_dto("cap-trim-bbb", CalibrationState::Retired)).unwrap();
     assert!(matches!(
-        retired.pick_for_match(),
+        retired.pick_for_match(ProgrammingMode::Servo),
         Err(ServiceError::BankExhausted)
     ));
 }

@@ -51,6 +51,7 @@ fn config(duration_ms: u64) -> MatchConfig {
             challenge_id: "easy".into(),
             version: 1,
         }),
+        programming_mode: ProgrammingMode::Servo,
     }
 }
 
@@ -61,6 +62,7 @@ fn scored(id: &str, completion: f64, efficiency: f64, duration_ms: f64) -> Submi
         challenge_id: "easy".into(),
         challenge_version: 1,
         status: SubmissionStatus::Completed,
+        programming_mode: ProgrammingMode::Servo,
         score: ScoreResult {
             completion_score: completion,
             efficiency_score: efficiency,

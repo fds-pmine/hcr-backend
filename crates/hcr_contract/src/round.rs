@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
+use crate::cutter::ProgrammingMode;
 use crate::domain::ProgramMetrics;
 
 /// Lifecycle of a round.
@@ -63,6 +64,20 @@ pub struct MatchConfig {
     /// participant gets the identical item either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub challenge_ref: Option<MatchChallengeRef>,
+    /// Which editor the round is played in. Everyone uses the same one.
+    ///
+    /// A round means something only if every player faced the same task, and the
+    /// two modes are not the same task — one Cutter Grid command crosses a
+    /// lattice cell, one servo command drives a joint, and the same challenge has
+    /// a different difficulty in each. SPEC v0.3 §15.1 says their scores are not
+    /// to be compared for fairness, and a mixed round would do exactly that
+    /// while calling the result a ranking.
+    ///
+    /// The server enforces it rather than trusting the client to: submissions
+    /// written in another mode are refused with
+    /// [`MatchRejection::WrongProgrammingMode`].
+    #[serde(default, skip_serializing_if = "ProgrammingMode::is_default")]
+    pub programming_mode: ProgrammingMode,
 }
 
 impl Default for MatchConfig {
@@ -73,6 +88,7 @@ impl Default for MatchConfig {
             max_players: 16,
             min_submit_interval_ms: 2_000,
             challenge_ref: None,
+            programming_mode: ProgrammingMode::Servo,
         }
     }
 }
@@ -141,6 +157,12 @@ pub enum MatchRejection {
     WrongPhase,
     /// The submission scored a different challenge from the round's.
     WrongChallenge,
+    /// The submission was written in a different editor from the round's.
+    ///
+    /// Separate from [`Self::WrongChallenge`] because the fix is different: the
+    /// player is on the right challenge and has to switch modes, not find
+    /// another round.
+    WrongProgrammingMode,
 }
 
 /// Response to a submission during a round.
@@ -197,6 +219,13 @@ pub struct MatchResults {
     pub challenge_version: u32,
     /// Metric used.
     pub rank_by: RankBy,
+    /// Editor the round was played in. Single-mode, so it applies to every row.
+    ///
+    /// Published with the standings because a ranking is only meaningful
+    /// alongside the task it ranks, and two rounds on the same challenge in
+    /// different modes are not comparable.
+    #[serde(default, skip_serializing_if = "ProgrammingMode::is_default")]
+    pub programming_mode: ProgrammingMode,
     /// Standings, best first.
     pub rows: Vec<MatchResultRow>,
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use hcr_contract::{
     CalibrationState, ChallengeDefinition, ChallengeDefinitionDto, ChallengeMeta, ItemParameters,
-    SkillDimension,
+    ProgrammingMode, SkillDimension,
 };
 use hcr_qbank::{CapTrimGenerator, ChallengeGenerator, DifficultyModel};
 use crate::CatalogStore;
@@ -48,6 +48,12 @@ pub fn seed_catalog() -> Arc<CatalogStore> {
                 mastery_threshold: 0.5,
                 generator: None,
                 hardware_compatible: false,
+                // The one challenge with a certified Cutter Grid profile: the
+                // frontend bundles `cutter-grid-profile-v2.json` for exactly
+                // this hairstyle and geometry, and the signature check ties a
+                // trajectory to it. Every other item in this catalog is
+                // generated, and the generator produces no profile.
+                programming_modes: vec![ProgrammingMode::Servo, ProgrammingMode::CutterGrid],
             },
         })
         .expect("seed shipped challenge");

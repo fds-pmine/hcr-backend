@@ -346,6 +346,12 @@ impl MatchRegistry {
         {
             return refuse(MatchRejection::WrongChallenge);
         }
+        // The mode is read off the scored result, not off the request: it is
+        // whichever engine actually produced this score, so a client cannot
+        // claim one mode and submit the other.
+        if result.programming_mode != room.state.config.programming_mode {
+            return refuse(MatchRejection::WrongProgrammingMode);
+        }
         if let Some(previous) = room.last_submit_at.get(player_id) {
             if now.saturating_sub(*previous) < room.state.config.min_submit_interval_ms {
                 return refuse(MatchRejection::RateLimited);
@@ -458,6 +464,7 @@ impl MatchRegistry {
             challenge_id: room.challenge.challenge_id.clone(),
             challenge_version: room.challenge.version,
             rank_by,
+            programming_mode: room.state.config.programming_mode,
             rows,
         })
     }

@@ -8,8 +8,8 @@ use arona::qbank::QBankError;
 use arona::session::SessionError;
 use arona::Session;
 use hcr_contract::{
-    NextItem, ResponseOutcome, SessionItemRecord, SessionLifecycle, SessionResultDto,
-    SessionSnapshot,
+    NextItem, ProgrammingMode, ResponseOutcome, SessionItemRecord, SessionLifecycle,
+    SessionResultDto, SessionSnapshot,
 };
 use hcr_qbank::{
     HcrDynamicBank, OutcomeStore, SessionConfig, SharedServedLog, build_session, raw_from_remapped,
@@ -29,6 +29,9 @@ enum Command {
         claims: Box<ItemRefClaims>,
         submission_id: String,
         raw_score: f64,
+        /// Mode the submission was actually scored in, read off the stored
+        /// result rather than asserted by the caller.
+        submission_mode: ProgrammingMode,
         reply: oneshot::Sender<ServiceResult<ResponseOutcome>>,
     },
     Snapshot(oneshot::Sender<ServiceResult<SessionSnapshot>>),
@@ -46,6 +49,8 @@ pub struct SessionSpec {
     pub config: SessionConfig,
     /// Seed for the bank's selection RNG, so the session is reproducible.
     pub seed: u64,
+    /// Which editor this session is practised in.
+    pub programming_mode: ProgrammingMode,
 }
 
 /// A live session.
@@ -91,11 +96,13 @@ impl SessionHandle {
         claims: ItemRefClaims,
         submission_id: String,
         raw_score: f64,
+        submission_mode: ProgrammingMode,
     ) -> ServiceResult<ResponseOutcome> {
         self.call(|reply| Command::Respond {
             claims: Box::new(claims),
             submission_id,
             raw_score,
+            submission_mode,
             reply,
         })
         .await
@@ -114,6 +121,8 @@ impl SessionHandle {
 
 struct Actor {
     session_id: String,
+    /// The one mode this session measures. Fixed at creation.
+    programming_mode: ProgrammingMode,
     /// `Option` because `Session::finalize` consumes it.
     session: Option<Session>,
     outcomes: OutcomeStore,
@@ -187,9 +196,20 @@ impl Actor {
         claims: &ItemRefClaims,
         submission_id: String,
         raw_score: f64,
+        submission_mode: ProgrammingMode,
     ) -> ServiceResult<ResponseOutcome> {
         if claims.session_id != self.session_id {
             return Err(ServiceError::ItemRefInvalid("issued to another session"));
+        }
+
+        // A session measures one ability, in one mode. Letting a Cutter Grid
+        // attempt move a servo θ — or the reverse — would put two different
+        // difficulties on one scale and call the result a measurement, which is
+        // precisely the pooling `07-CALIBRATION.md` §1 rules out.
+        if submission_mode != self.programming_mode {
+            return Err(ServiceError::ItemRefInvalid(
+                "the submission was written in a different programming mode",
+            ));
         }
 
         let (expected, _) = self
@@ -349,6 +369,7 @@ impl SessionRegistry {
 
         let mut actor = Actor {
             session_id: spec.session_id.clone(),
+            programming_mode: spec.programming_mode,
             session: Some(session),
             outcomes,
             served,
@@ -372,9 +393,15 @@ impl SessionRegistry {
                         claims,
                         submission_id,
                         raw_score,
+                        submission_mode,
                         reply,
                     } => {
-                        let _ = reply.send(actor.respond(&claims, submission_id, raw_score));
+                        let _ = reply.send(actor.respond(
+                            &claims,
+                            submission_id,
+                            raw_score,
+                            submission_mode,
+                        ));
                     }
                     Command::Snapshot(reply) => {
                         let _ = reply.send(actor.snapshot());

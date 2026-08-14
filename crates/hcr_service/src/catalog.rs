@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use hcr_contract::{
-    ChallengeDefinition, ChallengeDefinitionDto, ChallengeMeta, ChallengeSummary,
+    ChallengeDefinition, ChallengeDefinitionDto, ChallengeMeta, ChallengeSummary, ProgrammingMode,
 };
 use hcr_qbank::{BankItem, CatalogSnapshot};
 
@@ -160,7 +160,7 @@ impl CatalogStore {
     /// Beyond that this takes the first entry in [`Self::list`]'s order, so an
     /// unpinned round lands on an authored, human-checked challenge rather than
     /// on whichever generated id happened to sort first.
-    pub fn pick_for_match(&self) -> ServiceResult<(String, u32)> {
+    pub fn pick_for_match(&self, mode: ProgrammingMode) -> ServiceResult<(String, u32)> {
         let inner = self
             .inner
             .read()
@@ -171,6 +171,10 @@ impl CatalogStore {
             .iter()
             .filter_map(|(id, version)| inner.versions.get(&(id.clone(), *version)))
             .filter(|dto| dto.meta.calibration.servable())
+            // Cutter Grid needs a certified planner profile, so most items
+            // cannot be played in it. Serving one anyway would open a round on a
+            // challenge nobody in it could attempt.
+            .filter(|dto| dto.meta.supports(mode))
             .min_by(|a, b| {
                 a.meta
                     .generator
@@ -184,6 +188,19 @@ impl CatalogStore {
 
     /// Build a bank snapshot over the latest version of every challenge.
     pub fn snapshot(&self) -> ServiceResult<Arc<CatalogSnapshot>> {
+        self.snapshot_for(ProgrammingMode::Servo)
+    }
+
+    /// Build a bank snapshot of the items playable in `mode`.
+    ///
+    /// Filtering here rather than at selection time is deliberate: arona picks
+    /// the item with the most information at the learner's θ, and an item it
+    /// cannot legally serve must not be in the pool it is choosing from. Handing
+    /// it the full bank and rejecting the choice afterwards would make selection
+    /// silently worse — it would keep picking the most informative item, be
+    /// refused, and fall back to a less informative one — while looking like it
+    /// was working.
+    pub fn snapshot_for(&self, mode: ProgrammingMode) -> ServiceResult<Arc<CatalogSnapshot>> {
         let inner = self
             .inner
             .read()
@@ -193,6 +210,7 @@ impl CatalogStore {
             .latest
             .iter()
             .filter_map(|(id, version)| inner.versions.get(&(id.clone(), *version)))
+            .filter(|dto| dto.meta.supports(mode))
             .map(|dto| BankItem::new(dto.challenge.id.clone(), dto.meta.clone()))
             .collect();
 

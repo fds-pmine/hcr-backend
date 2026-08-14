@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 
 use hcr_contract::{
     CalibrationState, ChallengeDefinition, ChallengeDefinitionDto, ChallengeMeta,
-    GeneratorProvenance, HairstyleDefinition, ItemParameters, SkillDimension, VoxelCoord,
+    GeneratorProvenance, HairstyleDefinition, ItemParameters, ProgrammingMode, SkillDimension,
+    VoxelCoord,
 };
 use rand::prelude::*;
 use rand::rngs::StdRng;
@@ -193,6 +194,13 @@ pub trait ChallengeGenerator: Send + Sync + std::fmt::Debug {
                         params: params.clone(),
                     }),
                     hardware_compatible: family.hardware_compatible,
+                    // Servo only, and not as a placeholder. Cutter Grid needs a
+                    // certified planner profile per challenge — a proof that the
+                    // lattice is reachable and that a reference program hits the
+                    // target — and generating one is a separate, expensive step
+                    // this generator does not perform. Claiming the mode without
+                    // it would produce items that cannot be completed.
+                    programming_modes: vec![ProgrammingMode::Servo],
                 },
             },
             predicted_difficulty: predicted,
