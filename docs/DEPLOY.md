@@ -103,6 +103,29 @@ sudo systemctl restart hcr-server
 
 Then put a reverse proxy in front — see §2.1 (nginx/aaPanel) or §2.2 (Caddy).
 
+### Re-install
+
+``````bash
+cargo build --release -p hcr_service --features hotaru --bin hcr-server
+sudo install -m0755 target/release/hcr-server /usr/local/bin/
+sudo systemctl restart hcr-server
+sudo cp /etc/hcr-server.env /etc/hcr-server.env.bak
+
+sudo install -m0755 target/release/hcr-server /usr/local/bin/
+
+sudo install -m0644 deploy/hcr-usage.logrotate /etc/logrotate.d/hcr-usage
+
+sudo sed -i 's|^HCR_CORS_ORIGIN=.*|HCR_CORS_ORIGIN=https://web.hcr.rs,hcr://app|' /etc/hcr-server.env
+grep -q '^HCR_USAGE_LOG=' /etc/hcr-server.env || \
+echo 'HCR_USAGE_LOG=/var/lib/hcr/usage.jsonl' | sudo tee -a /etc/hcr-server.env
+
+sudo grep -c '^HCR_SIGNING_KEY=replace-me' /etc/hcr-server.env   # must print 0
+
+sudo systemctl restart hcr-server
+``````
+
+
+
 ### 2.1 Reverse proxy — nginx via aaPanel
 
 `deploy/nginx-hcrapi.conf` is the site body. Create the site in aaPanel, let the

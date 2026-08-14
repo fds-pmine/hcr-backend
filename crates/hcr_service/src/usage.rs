@@ -362,6 +362,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A row is readable by anything else the moment `record` returns.
+    ///
+    /// Worth pinning down, because "the log looked empty" is the symptom of a
+    /// held descriptor pointing at a rotated file, and it would be easy to
+    /// misdiagnose that as buffering and reach for a flush that changes
+    /// nothing. `File` is unbuffered — there is no userspace buffer to flush —
+    /// so a `tail -f` on the server sees each row as it is written, without the
+    /// process closing the file or exiting.
+    #[test]
+    fn each_row_is_visible_before_the_next_is_written() {
+        let dir = scratch("immediate");
+        let path = dir.join("usage.jsonl");
+        let log = UsageLog::open(&path).expect("open");
+
+        log.record(&event(1));
+        assert_eq!(lines(&path), 1, "first row not visible while still open");
+
+        log.record(&event(2));
+        assert_eq!(lines(&path), 2, "second row not visible while still open");
+
+        // Still open, never flushed, never dropped.
+        drop(log);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn follows_the_path_when_rotation_renames_the_file() {
         let dir = scratch("rename");
