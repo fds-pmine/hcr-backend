@@ -30,6 +30,29 @@
 //!   metrics (`blocks`, `commands`) carry the analysis value without archiving
 //!   the thing itself.
 //!
+//! # Reading logs written by an older build
+//!
+//! The log is append-only and never rewritten, so a file on a deployed server
+//! holds rows from every version that has ever run there. Anything that reads it
+//! — the calibration refit above all — must therefore parse rows this build did
+//! not write.
+//!
+//! Two rules keep that possible, and both are load-bearing:
+//!
+//! 1. **New fields are optional and skipped when absent.** A row written before
+//!    a field existed parses with that field defaulted; a row written after it
+//!    is unchanged for readers that ignore it. `mode` is the first such field —
+//!    an old `submission` row has none, and means `servo`, which is what
+//!    [`ProgrammingMode::default`] returns.
+//! 2. **Existing fields never change meaning.** Adding a Cutter Grid mode does
+//!    not get to redefine what `commands` counts, because two years of rows
+//!    already answer the old question and no migration can reach them.
+//!
+//! `UsageEvent` derives `Deserialize` purely so this is testable —
+//! [`tests::rows_written_before_this_build_still_parse`] parses a fixture of
+//! real pre-change lines. Without it "backwards compatible" would be a claim in
+//! a comment rather than something CI can fail on.
+//!
 //! # Failure is not fatal
 //!
 //! A log that cannot be written must never take the service down with it, so
@@ -44,13 +67,31 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use hcr_contract::{ProgramMetrics, ScoreResult, SubmissionResult, TerminalReason};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Which editor produced the program a row describes.
+///
+/// Recorded because the two modes are not comparable: a Cutter Grid command is
+/// one cell of tool travel and a servo command is one joint move, so pooling
+/// them would fit item difficulty against a mixture of two different tasks and
+/// call the result one number. SPEC v0.3 §15.1 already says the scores are not
+/// to be compared for fairness; this is what lets an analysis honour that.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProgrammingMode {
+    /// Joint angles. The default, and what every row written before this field
+    /// existed means.
+    #[default]
+    Servo,
+    /// Tool tip through the lattice.
+    CutterGrid,
+}
 
 /// One recorded interaction.
 ///
 /// `kind` is the discriminator; every variant carries `ts` (epoch ms) and, where
 /// one is known, `playerId`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum UsageEvent {
     /// A program was replayed and scored. The calibration datum.
@@ -72,6 +113,14 @@ pub enum UsageEvent {
         /// Set when it belonged to an adaptive session.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        /// Which editor wrote the program.
+        ///
+        /// Absent on rows written before Cutter Grid reached the backend, where
+        /// it is unambiguously `servo` — that was the only mode a submission
+        /// could arrive in. Skipped when servo so those rows and these stay byte
+        /// for byte identical, which keeps a diff of two log files readable.
+        #[serde(default, skip_serializing_if = "is_servo")]
+        mode: ProgrammingMode,
         /// How the run ended.
         terminal: TerminalReason,
         /// Similarity to the target — the outcome IRT is fitted on.
@@ -123,6 +172,11 @@ pub enum UsageEvent {
     },
 }
 
+/// Serde needs a path, not a closure, to decide whether to skip a field.
+fn is_servo(mode: &ProgrammingMode) -> bool {
+    matches!(mode, ProgrammingMode::Servo)
+}
+
 impl UsageEvent {
     /// Build the submission event for a scored result.
     pub fn from_submission(
@@ -131,6 +185,7 @@ impl UsageEvent {
         result: &SubmissionResult,
         match_id: Option<String>,
         session_id: Option<String>,
+        mode: ProgrammingMode,
     ) -> Self {
         let ScoreResult {
             completion_score,
@@ -150,6 +205,7 @@ impl UsageEvent {
             challenge_version: result.challenge_version,
             match_id,
             session_id,
+            mode,
             terminal: result.terminal.reason,
             completion_score,
             final_score,
@@ -321,8 +377,128 @@ impl UsageLog {
 
 #[cfg(test)]
 mod tests {
-    use super::{UsageEvent, UsageLog};
+    use super::{ProgrammingMode, UsageEvent, UsageLog};
     use std::path::PathBuf;
+
+    /// Rows captured from the format written before Cutter Grid existed.
+    const LEGACY_ROWS: &str = include_str!("../tests/fixtures/usage-legacy.jsonl");
+
+    /// Every legacy row still parses, and means what it meant.
+    ///
+    /// The calibration refit reads years of accumulated rows, so a schema change
+    /// that quietly stops parsing the old ones does not fail loudly — it fits
+    /// item difficulty against a truncated history and produces plausible,
+    /// wrong parameters.
+    #[test]
+    fn rows_written_before_this_build_still_parse() {
+        let rows: Vec<UsageEvent> = LEGACY_ROWS
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str(line).unwrap_or_else(|error| {
+                    panic!("legacy row no longer parses: {error}\n  {line}")
+                })
+            })
+            .collect();
+
+        assert_eq!(rows.len(), 5, "fixture should cover all three event kinds");
+
+        let submissions = rows
+            .iter()
+            .filter(|row| matches!(row, UsageEvent::Submission { .. }))
+            .count();
+        assert_eq!(submissions, 3);
+
+        // A row with no `mode` is a servo row. Defaulting it to anything else
+        // would silently relabel the entire history.
+        for row in &rows {
+            if let UsageEvent::Submission { mode, .. } = row {
+                assert_eq!(*mode, ProgrammingMode::Servo);
+            }
+        }
+    }
+
+    /// A servo row is byte-identical to what the previous build wrote.
+    ///
+    /// `mode` is skipped when servo precisely so this holds: an operator
+    /// diffing two log files across a deploy should see new rows, not a
+    /// reformatting of every old one.
+    #[test]
+    fn a_servo_row_gains_no_new_fields() {
+        let legacy = LEGACY_ROWS.lines().next().expect("a first row");
+        let parsed: UsageEvent = serde_json::from_str(legacy).expect("parses");
+        let reserialized = serde_json::to_string(&parsed).expect("serializes");
+
+        let before: serde_json::Value = serde_json::from_str(legacy).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&reserialized).unwrap();
+        assert_eq!(before, after, "round-tripping a legacy row changed it");
+        assert!(
+            !reserialized.contains("\"mode\""),
+            "servo rows must not carry a mode: {reserialized}"
+        );
+    }
+
+    /// A Cutter Grid row does carry the discriminator.
+    #[test]
+    fn a_cutter_grid_row_records_its_mode() {
+        let event = UsageEvent::Submission {
+            ts: 1,
+            player_id: None,
+            challenge_id: "neat-short-cap".to_string(),
+            challenge_version: 1,
+            match_id: None,
+            session_id: None,
+            mode: ProgrammingMode::CutterGrid,
+            terminal: hcr_contract::TerminalReason::Completed,
+            completion_score: 100.0,
+            final_score: 100.0,
+            blocks: 5,
+            commands: 22,
+            duration_ms: 12_348.0,
+        };
+        let line = serde_json::to_string(&event).expect("serializes");
+        assert!(line.contains(r#""mode":"cutter-grid""#), "{line}");
+    }
+
+    /// A reader built against the old schema still reads new rows.
+    ///
+    /// This is the other half of compatibility and the half that is easy to
+    /// forget: the log outlives whatever is reading it, and an analysis script
+    /// written last year must not choke on a field added this year. Serde
+    /// ignores unknown fields by default, which is exactly what the contract
+    /// requires of every receiver (`docs/01-CONTRACT.md` §1).
+    #[test]
+    fn a_reader_that_predates_mode_still_reads_new_rows() {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LegacySubmissionRow {
+            challenge_id: String,
+            completion_score: f64,
+            commands: u32,
+        }
+
+        let event = UsageEvent::Submission {
+            ts: 1,
+            player_id: None,
+            challenge_id: "neat-short-cap".to_string(),
+            challenge_version: 1,
+            match_id: None,
+            session_id: None,
+            mode: ProgrammingMode::CutterGrid,
+            terminal: hcr_contract::TerminalReason::Completed,
+            completion_score: 100.0,
+            final_score: 100.0,
+            blocks: 5,
+            commands: 22,
+            duration_ms: 12_348.0,
+        };
+        let line = serde_json::to_string(&event).expect("serializes");
+
+        let row: LegacySubmissionRow = serde_json::from_str(&line).expect("old reader copes");
+        assert_eq!(row.challenge_id, "neat-short-cap");
+        assert_eq!(row.completion_score, 100.0);
+        assert_eq!(row.commands, 22);
+    }
 
     fn event(ts: u64) -> UsageEvent {
         UsageEvent::MatchResults {

@@ -25,6 +25,7 @@ extern crate alloc;
 
 pub mod collision;
 pub mod controller;
+pub mod cutter;
 pub mod engine;
 pub mod error;
 pub mod executor;
@@ -39,8 +40,12 @@ pub use controller::{
     BlockedHeadCollision, COLLISION_BISECTION_STEPS, MAX_ANGULAR_STEP_DEG, MoveAdvanceResult,
     RobotController,
 };
+pub use cutter::{
+    CutterDivergence, CutterReplayOptions, CutterReplayOutcome, expand_cutter_program,
+    verify_and_replay,
+};
 pub use engine::{ReplayOptions, ReplayOutcome, replay};
-pub use error::SimError;
+pub use error::{CutterRejection, SimError};
 pub use executor::{ExecutorAdvanceResult, Movement, ProgramExecutor};
 pub use kinematics::{RobotPose, compute_robot_pose};
 pub use program::{estimate_program_duration, expand_program, expand_program_default};

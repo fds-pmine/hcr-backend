@@ -57,16 +57,23 @@ The stated goal is a hotaru + MQTT embedded implementation. Two facts block a di
 So the plan is **staged**: get the physical arm working now without touching its firmware, and land the
 Rust/hotaru firmware on hardware that can actually run it.
 
-## 3. Joint mapping — and three real mismatches
+## 3. Joint mapping — one remaining mismatch
 
-| Simulator joint | Range | Hardware axis | Servo range needed | Status |
-| --- | --- | --- | --- | --- |
-| `baseYaw` | −60…60 | `X` | 30…150 | ✅ fits |
-| `shoulder` | −20…100 | `Y` | 30…150 (centre 90, offset 40) | ✅ fits |
-| `elbow` | −135…10 | `Z` | 17.5…162.5 (centre 90, offset −62.5) | ✅ fits |
-| `wrist` | −100…100 | `B` | **−10…190** | ⚠️ **exceeds 180° servo travel** |
-| `shoulderRoll` | −45…45 | *(none)* | — | ❌ **no hardware axis** |
-| — | — | `E` (gripper, 45…100) | — | ❌ **no simulator joint** |
+**Angles on the wire are servo degrees**, not geometric ones — what the arm is actually commanded to, and
+what `hcr-fw` reports back. `JointConfig.min/maxAngleDeg` are therefore directly comparable with the
+firmware's own limits, which is what makes the table below a check rather than a conversion exercise.
+
+Firmware limits are `AXES` in `hcr-fw/hcr-gateway/src/robot/axis_config.rs`, converted from tenths of a
+degree. Every axis homes at 90°.
+
+| Simulator joint | Servo range | Geometric | Axis | Firmware travel | Status |
+| --- | --- | --- | --- | --- | --- |
+| `baseYaw` | 30…150 | −60…60 | `X` | 0…180 | ✅ fits, 30° margin each side |
+| `shoulder` | 30…150 | −20…100 (centre 90, offset 40) | `Y` | 0…180 | ✅ fits, 30° margin each side |
+| `elbow` | 17.5…162.5 | −135…10 (centre 90, offset −62.5) | `Z` | 0…180 | ✅ fits, 17.5° margin each side |
+| `wrist` | 0…180 | −90…90 | `B` | 0…180 | ✅ fits exactly — **no margin** |
+| `shoulderRoll` | — | −45…45 | *(none)* | — | ❌ **no hardware axis** |
+| — | — | — | `E` (cutter) | 45…100 | ❌ **no simulator joint** |
 
 The conversion is a single affine map, defined once in `AxisConfig::to_servo_deg`
 ([`schema/hcr_v1.rs`](schema/hcr_v1.rs)):
@@ -75,16 +82,23 @@ The conversion is a single affine map, defined once in `AxisConfig::to_servo_deg
 servoDeg = clamp(centerDeg + direction × (jointDeg − offsetDeg), minDeg, maxDeg)
 ```
 
-The three mismatches need product decisions, not code:
+`crates/hcr_sim/tests/servo_travel.rs` encodes this table so a range edit that overruns real servo travel
+fails in CI. That matters more than it used to: the Cutter Grid planner searches for poses *near* the joint
+limits, because that is where the reach is, so a range overstating the hardware produces certified
+trajectories the arm cannot fly.
 
-1. **`wrist` spans 200° but a servo travels 180°.** Either restrict hardware-bound challenges to
-   ±90°, add gearing, or accept clamping (which would make the arm silently disagree with the simulation —
-   the worst option, and the reason `ChallengeMeta.hardwareCompatible` exists).
-2. **`shoulderRoll` has no hardware axis.** Either constrain hardware-bound challenges to
-   `shoulderRoll = 0`, add a sixth servo (`T` is free, and `ss` is configurable), or mark
+**`wrist` was the third mismatch and is now resolved.** It used to span −100…100 geometric, which needs 200°
+of travel from a 180° servo; the arm would have clamped and silently disagreed with the screen at the
+extremes. It is now −90…90, the full servo throw and no more. The remaining two need product decisions, not
+code:
+
+1. **`shoulderRoll` has no hardware axis.** Either constrain hardware-bound challenges to
+   `shoulderRoll = 0`, add a sixth servo (`T` on GPIO 12 is free, and `ss` is configurable), or mark
    roll-using challenges simulation-only.
-3. **The gripper `E` is unmodelled.** v1 explicitly excludes scissor open/close (`AGENTS.md`, "v1 prohibitions"),
-   so `E` stays parked at home. If cutting is ever modelled, `E` is where it lands.
+2. **The cutter `E` is unmodelled.** v1 explicitly excludes scissor open/close (`AGENTS.md`, "v1
+   prohibitions"), so `E` stays parked at home — `servo_travel.rs` asserts no joint claims it. If cutting is
+   ever modelled, `E` is where it lands. Note that Cutter Grid does not change this: its tool is always
+   cutting, which is a property of how hair removal is modelled, not a servo that opens and closes.
 
 `hardwareCompatible` in `ChallengeMeta` is computed from these rules at generation time, so the qbank never
 serves a physically impossible challenge to a hardware-backed session.

@@ -114,6 +114,15 @@ pub enum HcrErrorCode {
     MatchNotReady,
     /// The question bank could not supply an item.
     BankExhausted,
+    /// A Cutter Grid trajectory failed server-side verification.
+    ///
+    /// Distinct from `PROGRAM_INVALID`, which means the program itself is
+    /// malformed. Here the program is fine and the *trajectory planned from it*
+    /// did not survive being re-derived — a different fault with a different fix
+    /// (replan, usually by reloading) and, unlike a bad program, one the learner
+    /// did not cause. `details.rejection` carries which audit failed and `field`
+    /// the block to highlight, when one can be attributed.
+    TrajectoryRejected,
     /// Device is not connected.
     DeviceOffline,
     /// Device is executing something else.
@@ -173,6 +182,14 @@ impl HcrError {
     /// Attach the field path that failed validation.
     pub fn with_field(mut self, field: impl Into<String>) -> Self {
         self.field = Some(field.into());
+        self
+    }
+
+    /// Attach one context key.
+    pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.details
+            .get_or_insert_with(BTreeMap::new)
+            .insert(key.into(), value.into());
         self
     }
 }

@@ -141,9 +141,13 @@ pub fn status_for(code: HcrErrorCode) -> u16 {
         HcrErrorCode::Unauthorized => 401,
         HcrErrorCode::Forbidden => 403,
         HcrErrorCode::ChallengeNotFound | HcrErrorCode::SessionNotFound => 404,
+        // 422 alongside the other content failures: the request is well-formed
+        // JSON describing something the server will not accept, and no amount of
+        // retrying the identical bytes changes that.
         HcrErrorCode::ProgramInvalid
         | HcrErrorCode::ProgramTooLarge
-        | HcrErrorCode::WeightsInvalid => 422,
+        | HcrErrorCode::WeightsInvalid
+        | HcrErrorCode::TrajectoryRejected => 422,
         HcrErrorCode::ItemRefInvalid
         | HcrErrorCode::SessionTerminated
         | HcrErrorCode::MatchNotReady

@@ -48,8 +48,100 @@ pub enum SimError {
         /// Ticks executed before giving up.
         ticks: u64,
     },
+    /// A Cutter Grid trajectory failed verification and the whole submission was
+    /// refused.
+    ///
+    /// Cutter Grid rejects rather than halting: the frontend will not run a
+    /// program whose plan fails these checks, so a server that scored a partial
+    /// run would be scoring something no client would ever produce
+    /// (`docs/backend/08-CUTTER-GRID.md` §4).
+    CutterPlanRejected {
+        /// Which audit failed.
+        rejection: CutterRejection,
+        /// Blockly block to highlight, when the failure can be attributed to one.
+        /// Absent for whole-plan failures like a signature mismatch.
+        source_block_id: Option<String>,
+        /// Operator-facing specifics — measured values, expected values.
+        detail: String,
+    },
     /// Internal invariant violated; indicates a bug in the engine itself.
     Internal(&'static str),
+}
+
+/// Why a Cutter Grid trajectory was refused.
+///
+/// Each variant is a distinct claim the client made that did not survive being
+/// re-derived from the joint angles. They map onto stable wire error codes in
+/// `hcr_service`, so a frontend can react to the kind without parsing prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CutterRejection {
+    /// Not a V2 ladder plan — wrong `kind`, `version` or planner build.
+    UnsupportedPlanVersion,
+    /// Planned against a different challenge than the one being scored.
+    SignatureMismatch,
+    /// Steps do not correspond to the program's own expansion.
+    StepMismatch,
+    /// The lattice path skips, repeats or teleports between cells.
+    CoordDiscontinuity,
+    /// A pose exceeds a joint's configured travel.
+    JointLimit,
+    /// A pose puts part of the arm inside the head.
+    HeadCollision,
+    /// A step does not open from the pose the previous one closed in.
+    PoseDiscontinuity,
+    /// The declared tool tip is not where the joint angles put it.
+    EndEffectorMismatch,
+    /// A single-cell move does not travel one cell along the axis it claims.
+    AxisDisplacement,
+    /// A waypoint wanders too far from its step's straight path.
+    PathDeviation,
+    /// Waypoint timestamps are absent, out of order, or disagree with the
+    /// step's declared duration.
+    TimelineInvalid,
+    /// The entry motion removes hair before the program starts.
+    EntryCutsHair,
+    /// The plan carries more waypoints than the verifier will process.
+    TooManyWaypoints,
+}
+
+impl CutterRejection {
+    /// Stable identifier, used to build the wire error code.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CutterRejection::UnsupportedPlanVersion => "UNSUPPORTED_PLAN_VERSION",
+            CutterRejection::SignatureMismatch => "SIGNATURE_MISMATCH",
+            CutterRejection::StepMismatch => "STEP_MISMATCH",
+            CutterRejection::CoordDiscontinuity => "COORD_DISCONTINUITY",
+            CutterRejection::JointLimit => "JOINT_LIMIT",
+            CutterRejection::HeadCollision => "HEAD_COLLISION",
+            CutterRejection::PoseDiscontinuity => "POSE_DISCONTINUITY",
+            CutterRejection::EndEffectorMismatch => "END_EFFECTOR_MISMATCH",
+            CutterRejection::AxisDisplacement => "AXIS_DISPLACEMENT",
+            CutterRejection::PathDeviation => "PATH_DEVIATION",
+            CutterRejection::TimelineInvalid => "TIMELINE_INVALID",
+            CutterRejection::EntryCutsHair => "ENTRY_CUTS_HAIR",
+            CutterRejection::TooManyWaypoints => "TOO_MANY_WAYPOINTS",
+        }
+    }
+
+    /// One sentence a waiting player could be shown.
+    pub fn message(self) -> &'static str {
+        match self {
+            CutterRejection::UnsupportedPlanVersion => {
+                "This program was planned by an older build. Reload and try again."
+            }
+            CutterRejection::SignatureMismatch => {
+                "This challenge changed since the program was planned. Reload and try again."
+            }
+            CutterRejection::EntryCutsHair => {
+                "The approach to the starting cell would cut hair before the program begins."
+            }
+            CutterRejection::HeadCollision => "The planned path would touch the head.",
+            CutterRejection::JointLimit => "The planned path needs an angle the arm cannot reach.",
+            CutterRejection::TooManyWaypoints => "This program is too large to verify.",
+            _ => "The planned trajectory did not pass verification.",
+        }
+    }
 }
 
 impl fmt::Display for SimError {
@@ -77,6 +169,13 @@ impl fmt::Display for SimError {
                 write!(f, "The program does not contain an executable command.")
             }
             SimError::InvalidScoring(reason) => write!(f, "{reason}"),
+            SimError::CutterPlanRejected {
+                rejection, detail, ..
+            } => write!(
+                f,
+                "Cutter Grid trajectory rejected ({}): {detail}",
+                rejection.as_str()
+            ),
             SimError::BudgetExhausted { ticks } => {
                 write!(f, "Replay exceeded its budget after {ticks} ticks.")
             }

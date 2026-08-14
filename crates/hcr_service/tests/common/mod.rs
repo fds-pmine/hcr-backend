@@ -138,6 +138,7 @@ pub fn submission(
         challenge_id: challenge_id.into(),
         challenge_version: version,
         program,
+        cutter_grid: None,
         session_id: None,
         match_id: None,
         client_preview: None,

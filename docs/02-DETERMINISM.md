@@ -87,6 +87,25 @@ rounding for `+ − × ÷ √` but *not* for transcendentals, so V8 and Rust's l
 Chasing bit-parity would mean writing a shared polynomial `sin_deg`/`cos_deg` in both languages — real work
 for no benefit once the server is authoritative.
 
+### 4.1 Cutter Grid raises the bar, and it holds
+
+Cutter Grid changes what cross-engine agreement is worth. On the servo path a divergence is a porting bug
+worth investigating; on the Cutter Grid path the server is checking a motion the *browser* computed, so the
+two engines have to agree on forward kinematics closely enough that an honest plan is never mistaken for a
+fabricated one. That check runs at `1e-6` on the tool tip — several orders tighter than the Jaccard
+tolerance above, and far tighter than the ULP-level disagreement the transcendentals actually produce.
+
+This is measured, not assumed. `crates/hcr_sim/tests/cutter.rs` verifies a trajectory produced by the real
+browser planner, and the Rust engine independently reproduces its cut exactly: the certified reference
+program scores completion 100, meaning every one of the twelve target voxels — and no others — came off
+under Rust's own FK, collision test and voxel sweep. Both engines agreeing on a 2 134-waypoint motion to
+within `1e-6` is a much stronger statement of parity than the conformance vectors alone make, and it is why
+the tolerance can be that tight without being fragile.
+
+One consequence worth stating: a genuine loss of parity would surface as legitimate submissions being
+rejected with `END_EFFECTOR_MISMATCH`, not as quietly wrong scores. That is the right failure direction, but
+it means the tolerance is a thing to check when either engine's kinematics changes.
+
 ## 5. Result hashing
 
 `resultVoxelsHash` identifies an outcome compactly, used for replay caching and for the divergence metric:
@@ -163,3 +182,19 @@ both hair sets empty (Completion is 100 by SPEC v0.3 §10.3).
 
 Generate from the TS engine — it is the incumbent definition of correct — and require the Rust engine to
 match within the §4 tolerance.
+
+Cutter Grid has a second fixture on the same principle, driven by the real browser planner rather than the
+real browser engine:
+
+| Fixture | Generator | Asserted by |
+| --- | --- | --- |
+| `crates/hcr_sim/tests/fixtures/vectors.json` | `tools/generate-vectors.ts` (`npm run vectors`) | `tests/conformance.rs` |
+| `crates/hcr_sim/tests/fixtures/cutter-grid-plan-v2.json` | `tools/generate-cutter-grid-plan.ts` (`npm run cutter-grid:plan`) | `tests/cutter.rs` |
+
+Both generators live in `hcr-backend/tools/` and import frontend source directly, but are invoked through a
+config in the frontend package — that is where `node_modules` is. Neither joins `npm test`: they write
+files, which is not something a test run should do.
+
+The Cutter Grid fixture regenerates byte-identically, which is worth knowing: the ladder planner's Halton
+seeding and deterministic farthest-point sampling mean a regenerated plan is the same plan, so a diff after
+running the generator is a real change in the planner and not noise.

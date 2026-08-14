@@ -15,8 +15,10 @@ extern crate alloc;
 
 pub mod api;
 pub mod catalog;
+pub mod cutter;
 pub mod domain;
 pub mod round;
+pub mod signature;
 pub mod wire;
 
 pub use round::{
@@ -33,12 +35,19 @@ pub use catalog::{
     CalibrationState, ChallengeDefinitionDto, ChallengeMeta, GeneratorProvenance, ItemId,
     ItemParameters, SkillDimension,
 };
+pub use cutter::{
+    CUTTER_GRID_LADDER_PLANNER_VERSION, CUTTER_TRAJECTORY_PLAN_VERSION, CutterGridAction,
+    CutterGridCoord, CutterGridDirection, CutterGridNode, CutterGridPlanningDiagnostics,
+    CutterGridProgram, CutterGridSubmission, CutterTrajectoryPlan, CutterTrajectoryStep,
+    CutterTrajectoryStepKind, CutterTrajectoryWaypoint,
+};
 pub use domain::{
     AllowedBlockType, Axis, ChallengeDefinition, HairstyleDefinition, JointConfig, JointId, Program,
     ProgramMetrics, ProgramNode, RobotCollisionConfig, RobotCommand, RobotConfig,
-    RobotGeometryConfig, ScoreResult, ScoreWeights, ScoringConfig, Terminal, TerminalReason, Vec3,
-    VoxelConfig, VoxelCoord,
+    RobotGeometryConfig, ScoreResult, ScoreWeights, ScoringConfig, ServoAxisId, ServoMapping,
+    Terminal, TerminalReason, Vec3, VoxelConfig, VoxelCoord,
 };
+pub use signature::{cutter_grid_challenge_signature_v2, fnv1a64};
 pub use wire::{ActorRef, ActorType, Envelope, HcrError, HcrErrorCode, PROTOCOL_VERSION};
 
 /// Canonical simulation tick, milliseconds.

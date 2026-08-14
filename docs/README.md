@@ -20,6 +20,7 @@
 | [`05-EMBEDDED.md`](05-EMBEDDED.md) | The real ESP8266 arm, the staged path to a Rust/embassy/hotaru firmware, joint mapping, safety |
 | [`06-MULTIPLAYER.md`](06-MULTIPLAYER.md) | Competitive wall-clock rounds: fairness controls, server-clock deadlines, lag mitigation, grading |
 | [`07-CALIBRATION.md`](07-CALIBRATION.md) | How difficulty updates across both modes: common scale + mode offset, linking items, anchor persons, competitive rating |
+| [`08-CUTTER-GRID.md`](08-CUTTER-GRID.md) | Cutter Grid: why its trajectory is verified rather than replayed, what the server re-derives, the trust boundary and the challenge signature |
 | [`schema/hcr-v1.d.ts`](schema/hcr-v1.d.ts) | **Normative** type definitions (TypeScript; the frontend can adopt directly) |
 | [`schema/hcr_v1.rs`](schema/hcr_v1.rs) | Rust DTO mirror of the same schema |
 

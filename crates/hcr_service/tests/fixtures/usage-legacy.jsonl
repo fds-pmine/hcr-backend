@@ -1,0 +1,5 @@
+{"kind":"submission","ts":1754006400000,"playerId":"01J4ZQZ8N0000000000000000","challengeId":"neat-short-cap","challengeVersion":1,"terminal":"completed","completionScore":100.0,"finalScore":91.25,"blocks":6,"commands":4,"durationMs":5645.0}
+{"kind":"submission","ts":1754006460000,"challengeId":"cap-trim-aaa","challengeVersion":1,"sessionId":"sess-01","terminal":"head-collision","completionScore":41.6,"finalScore":38.2,"blocks":9,"commands":7,"durationMs":8120.0}
+{"kind":"submission","ts":1754006520000,"playerId":"01J4ZQZ8N0000000000000001","challengeId":"neat-short-cap","challengeVersion":1,"matchId":"m-01","terminal":"command-limit","completionScore":0.0,"finalScore":0.0,"blocks":3,"commands":500,"durationMs":120000.0}
+{"kind":"sessionResponse","ts":1754006580000,"sessionId":"sess-01","challengeId":"cap-trim-aaa","rawScore":0.416,"correct":false,"theta":-0.42,"standardError":0.91}
+{"kind":"matchResults","ts":1754006640000,"matchId":"m-01","challengeId":"neat-short-cap","challengeVersion":1,"players":3,"submitted":2,"topCompletion":100.0}

@@ -142,8 +142,20 @@ export type HcrErrorCode =
   | 'ITEM_REF_INVALID'
   | 'SESSION_NOT_FOUND' | 'SESSION_TERMINATED' | 'BANK_EXHAUSTED'
   | 'MATCH_NOT_READY'
+  /** A Cutter Grid trajectory failed verification. `details.rejection` names which audit. */
+  | 'TRAJECTORY_REJECTED'
   | 'DEVICE_OFFLINE' | 'DEVICE_BUSY'
   | 'REPLAY_TIMEOUT' | 'RATE_LIMITED' | 'INTERNAL';
+
+/**
+ * Which audit refused a Cutter Grid trajectory, carried in `HcrError.details.rejection`.
+ * Not separate error codes: thirteen would be thirteen things for every client to learn.
+ */
+export type CutterGridRejection =
+  | 'UNSUPPORTED_PLAN_VERSION' | 'SIGNATURE_MISMATCH' | 'STEP_MISMATCH'
+  | 'COORD_DISCONTINUITY' | 'JOINT_LIMIT' | 'HEAD_COLLISION'
+  | 'POSE_DISCONTINUITY' | 'END_EFFECTOR_MISMATCH' | 'AXIS_DISPLACEMENT'
+  | 'PATH_DEVIATION' | 'TIMELINE_INVALID' | 'ENTRY_CUTS_HAIR' | 'TOO_MANY_WAYPOINTS';
 
 // ---------------------------------------------------------------------------
 // 3. Catalog
@@ -199,11 +211,102 @@ export interface SubmissionCreate {
   challengeVersion: number;
   /** Program IR nodes. NEVER runtimeCommands — the server expands `repeat` itself. */
   program: Program;
+  /**
+   * Set when the program was written in Cutter Grid rather than with joint angles.
+   *
+   * Carries the lattice IR *and* the frozen trajectory, because a Cutter Grid motion is not
+   * derivable from its program without redoing the browser's compile-time IK search. When
+   * present the server verifies the trajectory and `program` is empty. See `08-CUTTER-GRID.md`.
+   */
+  cutterGrid?: CutterGridSubmission;
   sessionId?: string;
   itemRef?: string;
   /** Set when submitting into a competitive round; acceptance is by server receive time. */
   matchId?: string;
   clientPreview?: ClientPreview;
+}
+
+// --- Cutter Grid -----------------------------------------------------------
+//
+// Mirrors `src/features/cutter-grid/types.ts`. A separate, additive family: the frozen v1
+// `Program` and `RobotCommand` are untouched, as SPEC v0.3 §15.4 requires.
+
+export type CutterGridDirection =
+  | 'right' | 'left' | 'up' | 'down' | 'forward' | 'backward';
+
+/** Logical lattice coordinate. `[0,0,0]` is where the certified entry pose puts the tool. */
+export type CutterGridCoord = [number, number, number];
+
+export type CutterGridNode =
+  | { type: 'move'; direction: CutterGridDirection; distance: number; sourceBlockId: string }
+  | { type: 'wait'; durationMs: number; sourceBlockId: string }
+  | { type: 'repeat'; count: number; body: CutterGridNode[]; sourceBlockId: string };
+
+export interface CutterGridProgram {
+  kind: 'cutter-grid';
+  version: 1;
+  plannerVersion: string;
+  nodes: CutterGridNode[];
+  sourceBlockCount: number;
+}
+
+export interface CutterTrajectoryWaypoint {
+  timeMs: number;
+  /** Servo degrees per joint. */
+  jointAngles: Record<string, number>;
+  /** Playback only; the server samples at waypoints and does not read this. */
+  jointVelocitiesDegPerSec?: Record<string, number>;
+  /** Checked against forward kinematics, never trusted. */
+  endEffector: Vec3Tuple;
+}
+
+export interface CutterTrajectoryStep {
+  index: number;
+  kind: 'move-cell' | 'wait';
+  sourceBlockId: string;
+  startCoord: CutterGridCoord;
+  endCoord: CutterGridCoord;
+  durationMs: number;
+  waypoints: CutterTrajectoryWaypoint[];
+  /** Advisory — the server carves from its own sweep and only compares. */
+  expectedCutVoxels?: VoxelKey[];
+}
+
+export interface CutterGridPlanningDiagnostics {
+  entryOptionId: string;
+  cartesianLayerCount: number;
+  candidateCounts?: number[];
+  seedBudgetUsed: number;
+  minimumHeadClearance: number;
+  minimumJointLimitMargin: number;
+  maximumNormalizedJointStep: number;
+}
+
+export interface CutterTrajectoryPlan {
+  kind: 'cutter-grid-trajectory';
+  version: 2;
+  plannerVersion: string;
+  /** fnv1a64 over the challenge; the server recomputes it and refuses a mismatch. */
+  challengeSignature: string;
+  entryOptionId: string;
+  /** Rest pose to lattice origin. Cuts nothing, costs no commands, charged no time. */
+  positioningTrajectory?: CutterTrajectoryWaypoint[];
+  startCoord: CutterGridCoord;
+  endCoord: CutterGridCoord;
+  steps: CutterTrajectoryStep[];
+  /** Advisory; used only for divergence telemetry. */
+  expectedResultVoxels?: VoxelKey[];
+  estimatedDurationMs: number;
+  /** Re-derived server-side and compared, never substituted for the server's count. */
+  executedCommandCount: number;
+  diagnostics: CutterGridPlanningDiagnostics;
+  /** fnv1a64 over the plan without this field. Integrity, not authenticity. */
+  trajectorySignature: string;
+}
+
+export interface CutterGridSubmission {
+  program: CutterGridProgram;
+  plan: CutterTrajectoryPlan;
 }
 
 export interface SubmissionAccepted { submissionId: string; state: 'queued' }

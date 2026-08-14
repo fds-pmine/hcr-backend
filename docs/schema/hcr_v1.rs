@@ -187,6 +187,10 @@ pub enum HcrErrorCode {
     ProgramInvalid, ProgramTooLarge, WeightsInvalid,
     ItemRefInvalid,
     SessionNotFound, SessionTerminated, BankExhausted,
+    MatchNotReady,
+    /// A Cutter Grid trajectory failed verification; `details.rejection` names
+    /// which audit. See `08-CUTTER-GRID.md` §6.
+    TrajectoryRejected,
     DeviceOffline, DeviceBusy,
     ReplayTimeout, RateLimited, Internal,
 }
@@ -245,12 +249,144 @@ pub struct SubmissionCreate {
     pub challenge_id: String,
     pub challenge_version: u32,
     pub program: Program,
+    /// Set when the program was written in Cutter Grid. See `08-CUTTER-GRID.md`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cutter_grid: Option<CutterGridSubmission>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_preview: Option<ClientPreview>,
+}
+
+// --- Cutter Grid -----------------------------------------------------------
+//
+// Implemented for real in `crates/hcr_contract/src/cutter.rs`; this is the
+// sketch. Additive — the frozen `Program` and `RobotCommand` are untouched.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CutterGridDirection {
+    Right,
+    Left,
+    Up,
+    Down,
+    Forward,
+    Backward,
+}
+
+/// Logical lattice coordinate; `[0, 0, 0]` is the certified entry cell.
+pub type CutterGridCoord = [i32; 3];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum CutterGridNode {
+    #[serde(rename_all = "camelCase")]
+    Move {
+        direction: CutterGridDirection,
+        distance: u32,
+        source_block_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Wait {
+        duration_ms: f64,
+        source_block_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Repeat {
+        count: u32,
+        body: Vec<CutterGridNode>,
+        source_block_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridProgram {
+    pub kind: String,
+    pub version: u32,
+    pub planner_version: String,
+    pub nodes: Vec<CutterGridNode>,
+    pub source_block_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterTrajectoryWaypoint {
+    pub time_ms: f64,
+    /// Servo degrees per joint.
+    pub joint_angles: BTreeMap<String, f64>,
+    /// Playback only; the server samples at waypoints.
+    #[serde(default)]
+    pub joint_velocities_deg_per_sec: BTreeMap<String, f64>,
+    /// Checked against forward kinematics, never trusted.
+    pub end_effector: Vec3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CutterTrajectoryStepKind {
+    MoveCell,
+    Wait,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterTrajectoryStep {
+    pub index: u32,
+    pub kind: CutterTrajectoryStepKind,
+    pub source_block_id: String,
+    pub start_coord: CutterGridCoord,
+    pub end_coord: CutterGridCoord,
+    pub duration_ms: f64,
+    pub waypoints: Vec<CutterTrajectoryWaypoint>,
+    #[serde(default)]
+    pub expected_cut_voxels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridPlanningDiagnostics {
+    pub entry_option_id: String,
+    pub cartesian_layer_count: u32,
+    #[serde(default)]
+    pub candidate_counts: Vec<u32>,
+    pub seed_budget_used: u32,
+    pub minimum_head_clearance: f64,
+    pub minimum_joint_limit_margin: f64,
+    pub maximum_normalized_joint_step: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterTrajectoryPlan {
+    pub kind: String,
+    pub version: u32,
+    pub planner_version: String,
+    /// Recomputed server-side from its own copy of the challenge.
+    pub challenge_signature: String,
+    pub entry_option_id: String,
+    /// Cuts nothing, costs no commands, charged no time — all three verified.
+    #[serde(default)]
+    pub positioning_trajectory: Vec<CutterTrajectoryWaypoint>,
+    pub start_coord: CutterGridCoord,
+    pub end_coord: CutterGridCoord,
+    pub steps: Vec<CutterTrajectoryStep>,
+    #[serde(default)]
+    pub expected_result_voxels: Vec<String>,
+    pub estimated_duration_ms: f64,
+    pub executed_command_count: u32,
+    pub diagnostics: CutterGridPlanningDiagnostics,
+    /// Integrity, not authenticity — a forger can recompute it.
+    pub trajectory_signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridSubmission {
+    pub program: CutterGridProgram,
+    pub plan: CutterTrajectoryPlan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

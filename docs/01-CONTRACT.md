@@ -190,7 +190,7 @@ that ignores it still gets a valid v1 challenge.
 
 | `kind` | Payload |
 | --- | --- |
-| `submission.create.req` | `{ submissionId, challengeId, challengeVersion, program: Program, sessionId?, itemRef?, clientPreview? }` |
+| `submission.create.req` | `{ submissionId, challengeId, challengeVersion, program: Program, cutterGrid?, sessionId?, itemRef?, clientPreview? }` |
 | `submission.accepted.res` | `{ submissionId, state: 'queued' }` |
 | `submission.result.evt` | `SubmissionResult` |
 
@@ -202,6 +202,12 @@ that ignores it still gets a valid v1 challenge.
   ([`02-DETERMINISM.md`](02-DETERMINISM.md) §4).
 - Replay is CPU-bound, so submission is asynchronous by default: acknowledge, then push
   `submission.result.evt`. The HTTP binding may answer synchronously for small programs.
+- **`cutterGrid`** is set when the program was written in Cutter Grid rather than with joint angles. It
+  carries the player's lattice IR *and* the frozen trajectory the browser planned from it, because a Cutter
+  Grid motion is not derivable from its program without redoing the client's compile-time IK search. The
+  server verifies that trajectory rather than replaying `program`, which is then empty. Additive and
+  optional: a servo submission is unchanged, and a server that ignores the field still speaks a complete v1.
+  Rules, limits and the trust boundary: [`08-CUTTER-GRID.md`](08-CUTTER-GRID.md).
 
 ### 6.3 Assessment session (CAT)
 
@@ -292,6 +298,7 @@ Over MQTT: reply with `kind: "error"` and `corr` set. Over HTTP: non-2xx with `{
 | `PROGRAM_INVALID` (with `field`) | 422 | no |
 | `PROGRAM_TOO_LARGE` (>500 commands) | 422 | no |
 | `WEIGHTS_INVALID` | 422 | no |
+| `TRAJECTORY_REJECTED` (with `field`, `details.rejection`) | 422 | no |
 | `ITEM_REF_INVALID` | 409 | no |
 | `SESSION_NOT_FOUND` / `SESSION_TERMINATED` | 404 / 409 | no |
 | `MATCH_NOT_READY` | 409 | yes (later) |
@@ -303,6 +310,11 @@ Over MQTT: reply with `kind: "error"` and `corr` set. Over HTTP: non-2xx with `{
 
 `PROGRAM_INVALID` carries `field` so the frontend can keep its existing behaviour of highlighting the
 offending block (SPEC v0.3 §13.2) — the compiler already tracks `sourceBlockId` on every command.
+
+`TRAJECTORY_REJECTED` is separate from `PROGRAM_INVALID` because the two need different fixes. The former
+means the program is malformed; the latter means the program is fine and the trajectory planned from it did
+not survive server-side verification, which the learner did not cause and cannot correct by editing blocks.
+`details.rejection` names which audit failed ([`08-CUTTER-GRID.md`](08-CUTTER-GRID.md) §6).
 
 `MATCH_NOT_READY` covers the two refusals that are the *design* of a round rather than a fault: the
 challenge during the lobby, and results while the round is still running. Both mean "try again later, not
@@ -347,6 +359,8 @@ Three rules the ACL must enforce, each corresponding to a real attack:
 | Max runtime commands per program | 500 | `programCompiler.ts:12` (v1 invariant) |
 | Max MQTT packet | 1 MiB (server default); 8 KiB on MCUs | `MqttSafety::max_packet_size` |
 | Max challenge payload | 2 MiB uncompressed | new |
+| Max request body | 8 MiB | sized for a Cutter Grid trajectory at the command cap (~2.5 MB); `deploy.rs` and both proxy configs must agree |
+| Max waypoints per Cutter Grid plan | 120 000 | verification cost guard |
 | Replay wall-clock budget | 5 s per submission | new |
 | Telemetry rate | ≤50 Hz, server may downsample before mirroring | new |
 | RPC timeout | 10 s control / 60 s submission | new |

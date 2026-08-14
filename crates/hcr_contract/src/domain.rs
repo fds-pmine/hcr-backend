@@ -71,10 +71,16 @@ pub struct JointConfig {
 /// A servo on the arm, named as `hcr-fw` names them (`robot/axis_config.rs`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ServoAxisId {
+    /// Base rotation. `baseYaw` on the simulated arm.
     X,
+    /// Shoulder. `shoulder`.
     Y,
+    /// Elbow. `elbow`.
     Z,
+    /// Wrist balance. `wrist`.
     B,
+    /// Cutter open/close. Present on the hardware, deliberately not simulated —
+    /// SPEC v0.3 keeps scissor actuation out of the first version.
     E,
 }
 
@@ -91,6 +97,7 @@ pub enum ServoAxisId {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServoMapping {
+    /// Which physical servo this joint drives.
     pub axis: ServoAxisId,
     /// Servo angle the joint's `offset_deg` lands on. 90° on every axis.
     pub center_deg: f64,

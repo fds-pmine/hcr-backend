@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use hcr_contract::{ChallengeDefinition, ChallengeDefinitionDto, ClientPreview, Program};
-use hcr_sim::{ReplayOptions, ReplayOutcome};
+use hcr_contract::{
+    ChallengeDefinition, ChallengeDefinitionDto, ClientPreview, CutterGridSubmission, Program,
+};
+use hcr_sim::{CutterReplayOptions, CutterReplayOutcome, ReplayOptions, ReplayOutcome};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 
@@ -24,6 +26,7 @@ pub struct ReplayPool {
     cache: Mutex<HashMap<CacheKey, Arc<ReplayOutcome>>>,
     cache_capacity: usize,
     options: ReplayOptions,
+    cutter_options: CutterReplayOptions,
 }
 
 impl ReplayPool {
@@ -34,6 +37,7 @@ impl ReplayPool {
             cache: Mutex::new(HashMap::new()),
             cache_capacity: 1024,
             options,
+            cutter_options: CutterReplayOptions::default(),
         }
     }
 
@@ -98,6 +102,43 @@ impl ReplayPool {
         let outcome = Arc::new(outcome);
         self.store(key, Arc::clone(&outcome));
         Ok(outcome)
+    }
+
+    /// Verify and score a Cutter Grid submission.
+    ///
+    /// Deliberately **not cached**. The servo cache keys on a program hash
+    /// because the outcome is a pure function of it; here the outcome depends on
+    /// the whole trajectory, which is megabytes, and two submissions of the same
+    /// program carry different trajectories whenever the planner is re-run. A
+    /// cache keyed on that would cost more memory than it ever saved. It still
+    /// takes a permit, because verification is the expensive part —
+    /// thousands of poses, each running forward kinematics, a head-collision test
+    /// and a voxel sweep.
+    pub async fn verify_cutter(
+        &self,
+        dto: &ChallengeDefinitionDto,
+        submission: &CutterGridSubmission,
+    ) -> ServiceResult<CutterReplayOutcome> {
+        let permit = Arc::clone(&self.permits)
+            .try_acquire_owned()
+            .map_err(|_| ServiceError::RateLimited)?;
+
+        let challenge: ChallengeDefinition = dto.challenge.clone();
+        let submission = submission.clone();
+        let options = self.cutter_options;
+
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            hcr_sim::verify_and_replay(&challenge, &submission, options)
+        })
+        .await
+        .map_err(|_| ServiceError::Internal("verification task failed to complete"))?
+        .map_err(ServiceError::from)
+    }
+
+    /// Cutter Grid verification limits in force.
+    pub fn cutter_options(&self) -> CutterReplayOptions {
+        self.cutter_options
     }
 
     fn lookup(&self, key: &CacheKey) -> Option<Arc<ReplayOutcome>> {

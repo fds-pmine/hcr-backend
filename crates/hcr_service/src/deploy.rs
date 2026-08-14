@@ -184,13 +184,31 @@ pub fn spawn_sweeper(service: Arc<crate::HcrService>) {
 /// Register every route on a hotaru app and start serving.
 ///
 /// Blocks for the lifetime of the process.
+/// Largest request body the server will read, bytes.
+///
+/// Sized for the biggest legitimate Cutter Grid submission with headroom, not
+/// for comfort: the trajectory is bounded by the 500-command cap and the
+/// planner's resampling rules, which together put the worst case near 2.5 MB
+/// uncompressed. 8 MiB leaves room for that to grow without inviting a body
+/// large enough to be a memory-exhaustion primitive.
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 pub fn serve(router: Arc<Router>, config: &ServerConfig) {
     use hotaru::http::*;
     use hotaru::prelude::*;
 
+    // Stated rather than inherited. A Cutter Grid submission carries its whole
+    // frozen trajectory — a few hundred KB typically, and around 2.5 MB for a
+    // program at the 500-command cap — so the body ceiling stopped being an
+    // irrelevant framework default the moment that shipped. Writing it down
+    // means a future framework bump cannot quietly lower it and turn large but
+    // legitimate submissions into truncated-body errors.
+    let mut safety = HttpSafety::default();
+    safety.set_max_body_size(Some(MAX_REQUEST_BODY_BYTES));
+
     let app = <Server>::new()
         .binding(config.binding.as_str())
-        .single_protocol(ProtocolBuilder::new(HTTP::server(HttpSafety::default())))
+        .single_protocol(ProtocolBuilder::new(HTTP::server(safety)))
         .build();
 
     for (pattern, name) in ROUTES {

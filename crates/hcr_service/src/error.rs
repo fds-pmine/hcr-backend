@@ -1,7 +1,7 @@
 //! Service failures, and how they become wire errors.
 
 use hcr_contract::{HcrError, HcrErrorCode};
-use hcr_sim::SimError;
+use hcr_sim::{CutterRejection, SimError};
 
 /// Everything the service layer can fail with.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +38,16 @@ pub enum ServiceError {
     SessionNotAwaitingResponse,
     /// The round has not reached the stage the request needs.
     MatchNotReady(&'static str),
+    /// A Cutter Grid trajectory failed verification.
+    TrajectoryRejected {
+        /// Which audit failed.
+        rejection: CutterRejection,
+        /// Blockly block to highlight, when the failure is attributable.
+        field: Option<String>,
+        /// Operator-facing specifics. Logged, not shown to the player — a
+        /// learner cannot act on "waypoint 118 sits 0.043 off the straight path".
+        detail: String,
+    },
     /// The bank could not supply an item.
     BankExhausted,
     /// Replay capacity is saturated.
@@ -62,6 +72,7 @@ impl ServiceError {
                 HcrErrorCode::SessionTerminated
             }
             ServiceError::MatchNotReady(_) => HcrErrorCode::MatchNotReady,
+            ServiceError::TrajectoryRejected { .. } => HcrErrorCode::TrajectoryRejected,
             ServiceError::BankExhausted => HcrErrorCode::BankExhausted,
             ServiceError::RateLimited => HcrErrorCode::RateLimited,
             ServiceError::ReplayTimeout => HcrErrorCode::ReplayTimeout,
@@ -76,6 +87,19 @@ impl ServiceError {
             ServiceError::ProgramInvalid {
                 field: Some(field), ..
             } => error.with_field(field.clone()),
+            ServiceError::TrajectoryRejected {
+                rejection, field, ..
+            } => {
+                // The kind travels in `details` rather than as its own code:
+                // thirteen audits would mean thirteen wire codes, and a client
+                // that wants to distinguish them can read one key while one that
+                // does not still gets a usable `TRAJECTORY_REJECTED`.
+                let error = error.with_detail("rejection", rejection.as_str());
+                match field {
+                    Some(field) => error.with_field(field.clone()),
+                    None => error,
+                }
+            }
             _ => error,
         }
     }
@@ -104,6 +128,10 @@ impl std::fmt::Display for ServiceError {
             }
             // Shown to a waiting player, so it says what to do, not what broke.
             ServiceError::MatchNotReady(reason) => write!(f, "{reason}"),
+            // Likewise: the measured detail goes to `details`, not to the player.
+            ServiceError::TrajectoryRejected { rejection, .. } => {
+                write!(f, "{}", rejection.message())
+            }
             ServiceError::BankExhausted => {
                 write!(f, "The question bank has no suitable item available.")
             }
@@ -149,6 +177,15 @@ impl From<SimError> for ServiceError {
                 }
             }
             SimError::InvalidScoring(reason) => ServiceError::WeightsInvalid(reason),
+            SimError::CutterPlanRejected {
+                rejection,
+                source_block_id,
+                detail,
+            } => ServiceError::TrajectoryRejected {
+                rejection,
+                field: source_block_id,
+                detail,
+            },
             SimError::BudgetExhausted { .. } => ServiceError::ReplayTimeout,
             SimError::Internal(reason) => ServiceError::Internal(reason),
         }

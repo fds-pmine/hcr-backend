@@ -235,10 +235,32 @@ impl HcrService {
         // Captured before `request` is partly moved into the result below.
         let (match_id, session_id) = (request.match_id.clone(), request.session_id.clone());
 
-        // The server expands `repeat` itself inside replay; a client-supplied
-        // command list is never trusted, which is what gives the 500-command cap
-        // any force.
-        let outcome = self.replay.replay(&dto, &request.program).await?;
+        // Which engine runs is decided by the submission, not by configuration:
+        // a Cutter Grid program has no joint commands to replay, and a servo
+        // program has no trajectory to verify.
+        let (outcome, mode, diverged_from_client) = match request.cutter_grid.as_ref() {
+            Some(cutter) => {
+                let verified = self.replay.verify_cutter(&dto, cutter).await?;
+                let diverged = verified.divergence.diverged();
+                (
+                    verified.replay,
+                    crate::usage::ProgrammingMode::CutterGrid,
+                    diverged,
+                )
+            }
+            None => {
+                // The server expands `repeat` itself inside replay; a
+                // client-supplied command list is never trusted, which is what
+                // gives the 500-command cap any force.
+                let outcome = self.replay.replay(&dto, &request.program).await?;
+                let diverged = diverged(request.client_preview.as_ref(), &outcome);
+                (
+                    (*outcome).clone(),
+                    crate::usage::ProgrammingMode::Servo,
+                    diverged,
+                )
+            }
+        };
 
         let status = match outcome.terminal.reason {
             TerminalReason::Completed => SubmissionStatus::Completed,
@@ -258,7 +280,7 @@ impl HcrService {
                 engine_version: ENGINE_VERSION.to_string(),
                 tick_ms: self.replay.options().tick_ms,
                 simulated_ms: outcome.simulated_ms,
-                diverged_from_client: diverged(request.client_preview.as_ref(), &outcome),
+                diverged_from_client,
             },
             error: None,
         };
@@ -270,6 +292,7 @@ impl HcrService {
             &result,
             match_id,
             session_id,
+            mode,
         ));
         Ok(result)
     }

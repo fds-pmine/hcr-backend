@@ -32,6 +32,16 @@ api.hcr.rs {
 		}
 	}
 
+	# A Cutter Grid submission carries its whole frozen trajectory: a few
+	# hundred kB typically, ~2.5MB for a program at the 500-command cap.
+	# Caddy imposes no limit of its own, so without this an arbitrarily large
+	# body reaches the service before being refused. 8MB matches both
+	# `MAX_REQUEST_BODY_BYTES` in `deploy.rs` and the nginx config — the three
+	# have to agree, since the smallest silently becomes the real limit.
+	request_body {
+		max_size 8MB
+	}
+
 	encode zstd gzip
 
 	header {

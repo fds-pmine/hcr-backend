@@ -74,7 +74,22 @@ pub struct SubmissionCreate {
     pub challenge_version: u32,
     /// Program IR. Never a pre-expanded command list — the server expands
     /// `repeat` itself so the command cap means something.
+    ///
+    /// Still required for a Cutter Grid submission, which sets `cutterGrid` as
+    /// well: this field then carries an empty servo program. Making it optional
+    /// would ripple through every existing client and reader for the benefit of
+    /// one mode.
     pub program: Program,
+    /// Present when the submission was written in Cutter Grid rather than with
+    /// joint angles.
+    ///
+    /// Additive and optional: a servo submission is byte-identical to what it
+    /// was before this field existed, and a server that ignores it still speaks
+    /// a complete v1. When set, the server verifies the carried trajectory and
+    /// scores *that* instead of replaying `program`
+    /// (`docs/backend/08-CUTTER-GRID.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cutter_grid: Option<crate::cutter::CutterGridSubmission>,
     /// Set when this submission belongs to an adaptive session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
