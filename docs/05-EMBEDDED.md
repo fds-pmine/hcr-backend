@@ -108,6 +108,84 @@ delay. `ProgramMetrics.estimatedDurationMs` is a *simulation* quantity used for 
 be compared against hardware wall-clock. Real per-axis speeds belong in `dev/cfg` (`AxisConfig.speedDegPerSec`),
 measured on the actual arm.
 
+## 3.1 Cutter Grid on the arm: destinations, not the path
+
+Servo programs map onto the hardware almost directly. Cutter Grid does not, and the reason is the second
+mismatch above rather than anything about the mode itself.
+
+**The ladder planner uses `shoulderRoll` as a real degree of freedom.** Measured over the certified reference
+trajectory: 2,095 distinct roll angles spanning −11.4° to +45°, across all 2,134 waypoints. It is how the arm
+reaches around the head. The hardware has five servos and none of them rolls the shoulder.
+
+There is no partial version of that to send. Pinning the roll at rest and playing the other four joints puts
+the tool tip up to **0.50 m** from the planned path — **3.1 voxels, 4.2 tool radii** — with a mean error of
+0.18 m. That is not a degraded cut; it is a different motion. The arm would move confidently along a path
+with no relation to the screen, which is the single failure `armBridge.ts` exists to prevent.
+
+So `buildCutterArmPlan` — the full-path replay — **refuses**, and reports the measured deviation rather than
+asserting the rule. What the dock actually sends is the endpoint plan below, which sidesteps the constraint
+entirely.
+
+### What runs instead: endpoints, not the path
+
+The constraint above comes entirely from insisting the arm reproduce the *planner's* joint path. It does
+not have to.
+
+`Move left 3 voxels` is one instruction with one destination, and on hardware **there is no hair** — nothing
+depends on the route between destinations. So the arm is given the position each block ends at and solves
+its own pose for each, with the roll pinned at rest, using the same certified DLS solver the planner uses
+(pinning is done by setting that joint's range to a single value, so the solver's own limit clamp enforces
+it — no second solver, no fork).
+
+Measured on the shipped challenge's reference program:
+
+| | Result |
+| --- | --- |
+| Block endpoints | **5/5** reachable roll-free and clear of the head |
+| Individual cell centres | **22/22** reachable, if a finer trace is ever wanted |
+| Landing accuracy | within a quarter voxel of each destination |
+| Arm steps | 5, one per block |
+
+`buildCutterArmEndpointPlan` is what the dock sends. It refuses whole — sending nothing — if any single
+destination cannot be solved, rather than driving to the ones it can and stopping somewhere arbitrary.
+
+**This is not a replay and is not scoreable.** The arm visits the same cells by its own means; the swept
+volume between them is whatever the servos do, not the simulated one. That is fine for driving hardware and
+wrong for anything that measures a cut, which is why scoring stays on the server.
+
+### What full-path replay would still need
+
+A sixth servo on `T` (GPIO 12, free and already configurable — §3). `buildCutterArmPlan` implements that
+route and is tested against the real planner output, so it becomes available the moment the axis exists:
+
+- **Multi-axis `pose` steps.** A Cutter Grid waypoint moves every joint at once. `arm.setAngles` has always
+  accepted an array and built `?X=..&Y=..&Z=..&B=..`; nothing had reason to pass more than one element until
+  now. One request per waypoint instead of four.
+- **Error-bounded decimation.** 2,134 waypoints a few milliseconds apart is far past the 512-step budget and
+  far faster than an ESP8266 answers HTTP. Poses are chosen so the interpolated path stays within a stated
+  joint tolerance of the frozen trajectory, tightened to the smallest bound that fits the budget.
+- **Duration stretching.** Each step gets the longer of its planned duration and the time the servos need
+  (`Maxdms = 1440` for 180°, so 8 ms/degree). The path is preserved; the clock gives. Sending the next pose
+  while the arm is still travelling would make it silently cut corners.
+
+Measured on the reference trajectory with the roll frozen, at the 512-step budget:
+
+| | Value |
+| --- | --- |
+| Waypoints → poses | 2,112 → **277** (13.1%) |
+| Joint tolerance | **0.1°** — the firmware's own resolution, so nothing was given up |
+| Tool-tip error | **3.3 mm**, against a 120 mm tool radius |
+| Duration | 13.6 s planned → 15.1 s on the arm (×1.11) |
+
+The decimation is effectively lossless at the resolution the hardware can represent. The blocker is the
+missing axis, and only that.
+
+One caveat if the axis ever arrives: `/api/angles` applies the servos **in `X, Y, Z, B, E` order,
+sequentially** (`docs/API.md`) — one request, not one simultaneous motion. Cutter Grid trajectories are
+synchronised multi-joint paths, so the arm stair-steps them. At these per-step deltas the difference is below
+the enforced tolerance, but it is not a synchronised move and the vendor docs warn that driving several
+servos at once "draws a lot of power, needs external supply".
+
 ## 4. Tier 0 — gateway, no firmware change (recommended first step)
 
 ```mermaid
