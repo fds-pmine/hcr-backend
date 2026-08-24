@@ -123,6 +123,12 @@ pub enum HcrErrorCode {
     /// did not cause. `details.rejection` carries which audit failed and `field`
     /// the block to highlight, when one can be attributed.
     TrajectoryRejected,
+    /// A valid V4 Cutter Grid program could not be planned by the server.
+    ///
+    /// `details.plannerCode` and `details.stage` distinguish endpoint reach,
+    /// compact PTP, roadmap, and certification failures without multiplying the
+    /// public wire-code surface.
+    TrajectoryPlanningFailed,
     /// Device is not connected.
     DeviceOffline,
     /// Device is executing something else.

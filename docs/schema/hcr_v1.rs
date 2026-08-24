@@ -191,6 +191,9 @@ pub enum HcrErrorCode {
     /// A Cutter Grid trajectory failed verification; `details.rejection` names
     /// which audit. See `08-CUTTER-GRID.md` §6.
     TrajectoryRejected,
+    /// A valid compact V4 Cutter Grid program could not be planned. The
+    /// structured `plannerCode` and `stage` fields live in `details`.
+    TrajectoryPlanningFailed,
     DeviceOffline, DeviceBusy,
     ReplayTimeout, RateLimited, Internal,
 }
@@ -411,6 +414,250 @@ pub struct CutterTrajectoryPlan {
 pub struct CutterGridSubmission {
     pub program: CutterGridProgram,
     pub plan: CutterTrajectoryPlan,
+}
+
+// --- Cutter Grid V4 server planning ---------------------------------------
+//
+// V2 above remains the verification-only compatibility shape. V4 sends only a
+// program and Challenge reference to the server; the server owns the Profile
+// and produces the compact PTP plan below.
+
+pub type CutterGridProgramV4 = CutterGridProgram;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridBoundsV4 {
+    pub min: CutterGridCoord,
+    pub max: CutterGridCoord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CutterGridStaticIkStatusV4 { SafeCandidateKnown, NoSafeCandidateFound }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridNodeProfileV4 {
+    pub coord: CutterGridCoord,
+    pub world_position: Vec3,
+    pub static_ik_status: CutterGridStaticIkStatusV4,
+    pub candidate_count: u32,
+    pub seed_budget: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterTrajectoryBoundaryStateV4 {
+    pub joint_angles: BTreeMap<JointId, f64>,
+    pub joint_velocities_deg_per_sec: BTreeMap<JointId, f64>,
+    pub joint_accelerations_deg_per_sec2: BTreeMap<JointId, f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridSyncPtpPrimitiveV4 {
+    pub kind: String,
+    pub interpolation: String,
+    pub duration_ms: f64,
+    pub start: CutterTrajectoryBoundaryStateV4,
+    pub end: CutterTrajectoryBoundaryStateV4,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridContactEventV4 { pub time_ms: f64, pub voxel_keys: Vec<String> }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum CutterGridTrajectoryActionV4 {
+    #[serde(rename_all = "camelCase")]
+    Move {
+        occurrence_id: String,
+        source_block_id: String,
+        direction: CutterGridDirection,
+        distance: u32,
+        start_coord: CutterGridCoord,
+        end_coord: CutterGridCoord,
+        logical_command_count: u32,
+        /// Exactly one direct primitive or one detour represented by two.
+        primitives: Vec<CutterGridSyncPtpPrimitiveV4>,
+        contact_events: Vec<CutterGridContactEventV4>,
+        expected_cut_voxels: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Wait {
+        occurrence_id: String,
+        source_block_id: String,
+        duration_ms: f64,
+        logical_command_count: u32,
+        expected_cut_voxels: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridPositioningPlanV4 {
+    pub entry_option_id: String,
+    pub primitives: Vec<CutterGridSyncPtpPrimitiveV4>,
+    pub trajectory_signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridJointMotionLimitsV4 {
+    pub nominal_velocity_deg_per_sec: f64,
+    pub nominal_acceleration_deg_per_sec2: f64,
+    pub nominal_jerk_deg_per_sec3: f64,
+    pub max_velocity_deg_per_sec: f64,
+    pub max_acceleration_deg_per_sec2: f64,
+    pub max_jerk_deg_per_sec3: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridMotionLimitsV4 {
+    pub requested_speed_scale: f64,
+    pub joints: BTreeMap<JointId, CutterGridJointMotionLimitsV4>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridPlanningDiagnosticsV4 {
+    pub endpoint_layer_count: u32,
+    pub candidate_counts: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded_action_index: Option<u32>,
+    pub direct_primitive_count: u32,
+    pub detour_primitive_count: u32,
+    pub minimum_head_clearance: f64,
+    pub minimum_joint_limit_margin: f64,
+    pub maximum_normalized_joint_step: f64,
+    pub maximum_end_effector_chord_deviation: f64,
+    pub requested_speed_scale: f64,
+    pub actual_speed_scale: f64,
+    pub maximum_velocity_ratio: f64,
+    pub maximum_acceleration_ratio: f64,
+    pub maximum_jerk_ratio: f64,
+    pub adaptive_validation_sample_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterTrajectoryPlanV4 {
+    pub kind: String,
+    pub version: u32,
+    pub planner_version: String,
+    pub challenge_signature: String,
+    pub positioning: CutterGridPositioningPlanV4,
+    pub start_coord: CutterGridCoord,
+    pub end_coord: CutterGridCoord,
+    pub actions: Vec<CutterGridTrajectoryActionV4>,
+    pub expected_result_voxels: Vec<String>,
+    pub estimated_duration_ms: f64,
+    pub executed_command_count: u32,
+    pub motion_limits: CutterGridMotionLimitsV4,
+    pub motion_limits_signature: String,
+    pub diagnostics: CutterGridPlanningDiagnosticsV4,
+    pub trajectory_signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridEntryOptionV4 {
+    pub id: String,
+    pub joint_angles: BTreeMap<JointId, f64>,
+    pub positioning_primitive: CutterGridSyncPtpPrimitiveV4,
+    pub positioning_signature: String,
+    pub minimum_head_clearance: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridRoadmapNodeV4 {
+    pub id: String,
+    pub joint_angles: BTreeMap<JointId, f64>,
+    pub minimum_head_clearance: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridRoadmapEdgeV4 { pub from_node_id: String, pub to_node_id: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridRoadmapV4 {
+    pub nodes: Vec<CutterGridRoadmapNodeV4>,
+    pub edges: Vec<CutterGridRoadmapEdgeV4>,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridCertificationV4 {
+    pub passed: bool,
+    pub entry_zero_contact: bool,
+    pub reference_completion: f64,
+    pub reference_cut_voxels: Vec<String>,
+    pub reference_extra_cut_voxels: Vec<String>,
+    pub certified_directions: Vec<CutterGridDirection>,
+    pub authenticated_entry_option_ids: Vec<String>,
+    pub reference_trajectory_certified: bool,
+}
+
+/// A startup/CI asset. It is deliberately not in any client request body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridProfileV4 {
+    pub version: u32,
+    pub planner_version: String,
+    pub challenge_signature: String,
+    pub origin_hair_coord: CutterGridCoord,
+    pub origin_world_position: Vec3,
+    pub bounds: CutterGridBoundsV4,
+    pub entry_options: Vec<CutterGridEntryOptionV4>,
+    pub nodes: Vec<CutterGridNodeProfileV4>,
+    pub reference_program: CutterGridProgramV4,
+    pub reference_trajectory_signature: String,
+    pub certification: CutterGridCertificationV4,
+    pub motion_limits: CutterGridMotionLimitsV4,
+    pub motion_limits_signature: String,
+    pub roadmap: CutterGridRoadmapV4,
+    pub profile_signature: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CutterGridPlanningErrorCodeV4 {
+    PlannerNotReady, PlanningCancelled, ProfileV4Mismatch, OutOfBounds,
+    EndpointIkNotConverged, EndpointIkSearchExhausted, EndpointPtpDisconnected,
+    MotionPrimitiveBudgetExhausted, PtpCollision, PtpCertificateFailed,
+    ActualSweepCertificationFailed, PlanSignatureMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CutterGridPlanningStageV4 {
+    Profile, Endpoint, PtpEdge, Roadmap, MotionCertificate, SweepCertificate, Serialization,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridPlanRequestV1 {
+    pub challenge_id: String,
+    pub challenge_version: u32,
+    pub program: CutterGridProgramV4,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutterGridPlanResponseV1 {
+    pub kind: String,
+    pub version: u32,
+    pub planner_implementation: String,
+    pub planner_build: String,
+    pub profile_signature: String,
+    pub planning_duration_ms: f64,
+    pub plan: CutterTrajectoryPlanV4,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

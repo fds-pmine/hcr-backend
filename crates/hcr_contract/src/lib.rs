@@ -36,10 +36,19 @@ pub use catalog::{
     ItemParameters, SkillDimension,
 };
 pub use cutter::{
-    CUTTER_GRID_LADDER_PLANNER_VERSION, CUTTER_TRAJECTORY_PLAN_VERSION, CutterGridAction,
-    CutterGridCoord, CutterGridDirection, CutterGridNode, CutterGridPlanningDiagnostics,
-    CutterGridProgram, CutterGridSubmission, CutterTrajectoryPlan, CutterTrajectoryStep,
-    CutterTrajectoryStepKind, CutterTrajectoryWaypoint, ProgrammingMode,
+    CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION, CUTTER_GRID_LADDER_PLANNER_VERSION,
+    CUTTER_GRID_PLAN_API_VERSION, CUTTER_TRAJECTORY_PLAN_V4_VERSION,
+    CUTTER_TRAJECTORY_PLAN_VERSION, CutterGridAction, CutterGridBoundsV4,
+    CutterGridCertificationV4, CutterGridContactEventV4, CutterGridCoord, CutterGridDirection,
+    CutterGridEntryOptionV4, CutterGridJointMotionLimitsV4, CutterGridMotionLimitsV4,
+    CutterGridNode, CutterGridNodeProfileV4, CutterGridPlanRequestV1, CutterGridPlanResponseV1,
+    CutterGridPlanningDiagnostics, CutterGridPlanningDiagnosticsV4, CutterGridPlanningErrorCodeV4,
+    CutterGridPlanningStageV4, CutterGridPositioningPlanV4, CutterGridProfileV4, CutterGridProgram,
+    CutterGridProgramV4, CutterGridRoadmapEdgeV4, CutterGridRoadmapNodeV4, CutterGridRoadmapV4,
+    CutterGridStaticIkStatusV4, CutterGridSubmission, CutterGridSyncPtpPrimitiveV4,
+    CutterGridTrajectoryActionV4, CutterTrajectoryBoundaryStateV4, CutterTrajectoryPlan,
+    CutterTrajectoryPlanV4, CutterTrajectoryStep, CutterTrajectoryStepKind,
+    CutterTrajectoryWaypoint, ProgrammingMode,
 };
 pub use domain::{
     AllowedBlockType, Axis, ChallengeDefinition, HairstyleDefinition, JointConfig, JointId, Program,

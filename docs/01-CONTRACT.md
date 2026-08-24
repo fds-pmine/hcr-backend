@@ -74,6 +74,7 @@ non-browser tooling (curl, CI, load tests) has a path in. It carries envelope me
 GET  /api/v1/challenges                → ChallengeSummary[]   (ordered; see below)
 GET  /api/v1/challenges/{id}           → ChallengeDefinitionDto
 POST /api/v1/score                     → ScoreResult          (ScoreProvider parity)
+POST /api/v1/cutter-grid/plans         → CutterGridPlanResponseV1
 POST /api/v1/submissions               → SubmissionAccepted | SubmissionResult
 GET  /api/v1/submissions/{id}          → SubmissionResult
 POST /api/v1/sessions                  → SessionSnapshot
@@ -111,6 +112,12 @@ skipping `retired` items (`CatalogStore::pick_for_match`).
 
 These are the endpoints already reserved at `docs/HCR_Simulator_SPEC_v0.3.md:528-531`, kept identical in
 shape so the spec does not need rewriting.
+
+`POST /api/v1/cutter-grid/plans` is the independent V4 compact-PTP planning contract. It accepts
+`CutterGridPlanRequestV1` (a pinned Challenge reference and `CutterGridProgramV4`) and returns a plan made
+from the server-owned certified Profile. It is not a submission, does not score, creates no Session/Match
+state, and is not an ArmDock or firmware command path. The legacy optional `cutterGrid` submission field
+remains V2 verification-only compatibility and is not extended by V4.
 
 > **`Challenge` vs `ChallengeDefinition`.** The wire type is `ChallengeDefinition`
 > (`initialHair.voxels: VoxelCoord[]`), **not** `Challenge` — the latter holds `ReadonlySet<VoxelKey>`,
@@ -299,6 +306,7 @@ Over MQTT: reply with `kind: "error"` and `corr` set. Over HTTP: non-2xx with `{
 | `PROGRAM_TOO_LARGE` (>500 commands) | 422 | no |
 | `WEIGHTS_INVALID` | 422 | no |
 | `TRAJECTORY_REJECTED` (with `field`, `details.rejection`) | 422 | no |
+| `TRAJECTORY_PLANNING_FAILED` (with `field`, `details.plannerCode`, `details.stage`) | 422 | no |
 | `ITEM_REF_INVALID` | 409 | no |
 | `SESSION_NOT_FOUND` / `SESSION_TERMINATED` | 404 / 409 | no |
 | `MATCH_NOT_READY` | 409 | yes (later) |
@@ -315,6 +323,13 @@ offending block (SPEC v0.3 §13.2) — the compiler already tracks `sourceBlockI
 means the program is malformed; the latter means the program is fine and the trajectory planned from it did
 not survive server-side verification, which the learner did not cause and cannot correct by editing blocks.
 `details.rejection` names which audit failed ([`08-CUTTER-GRID.md`](08-CUTTER-GRID.md) §6).
+
+`TRAJECTORY_PLANNING_FAILED` is likewise not `PROGRAM_INVALID`: syntax and command-limit validation has
+already succeeded, but the deterministic server planner could not produce a certified compact PTP plan.
+`details.plannerCode` and `details.stage` are stable V4 categories; when known, `details.actionIndex`,
+`details.expandedActionIndex`, `details.targetCoord`, and `field` identify the visible Blockly action. A
+missing server Profile is specifically `planner-not-ready`, not a reason to fall back to scoring or V2
+submission semantics.
 
 `MATCH_NOT_READY` covers the two refusals that are the *design* of a round rather than a fault: the
 challenge during the lobby, and results while the round is still running. Both mean "try again later, not

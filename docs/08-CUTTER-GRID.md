@@ -9,6 +9,27 @@ Types: [`crates/hcr_contract/src/cutter.rs`](../crates/hcr_contract/src/cutter.r
 Verifier: [`crates/hcr_sim/src/cutter.rs`](../crates/hcr_sim/src/cutter.rs).
 Frontend counterpart: `src/features/cutter-grid/` and SPEC v0.3 §15.
 
+## 0. V4 服务端规划迁移边界
+
+本文件既保留 V2 的“客户端上传冻结轨迹、服务端审计”历史兼容说明，也定义 V4 的独立迁移
+契约；二者不得混用。V2 `SubmissionCreate.cutterGrid` 继续只读兼容，既不删除，也不扩展为
+V4 的承载通道。
+
+V4 使用 `POST /api/v1/cutter-grid/plans`：客户端只能传入 `challengeId`、`challengeVersion` 和
+`CutterGridProgramV4`，不得上传 Profile、roadmap、IK 候选或密集轨迹。服务端以 Challenge
+签名选择自身持有、已认证的 `CutterGridProfileV4`，在 `hcr_sim` 的 `std + planner` 纯领域
+模块中生成 `CutterTrajectoryPlanV4`。成功响应包含实现来源、构建标识、Profile 签名和计划；
+`planningDurationMs` 仅作可观测性数据，不参与轨迹签名。
+
+本迁移的首个线上消费者仅为 Practice 的 Run/Test/Step。Cutter Grid 仍由前端本地评分，且
+V4 不开放 Submission、Session、Match、Versus、Electron、固件或 ArmDock。没有认证 Profile
+的 Challenge 返回 `TRAJECTORY_PLANNING_FAILED` / `planner-not-ready`（HTTP 422），而不是接受
+客户端补交的 Profile。服务不可达、超时、429 或 5xx 时才允许前端回退到现有 TypeScript
+Worker；其余 4xx、签名不匹配和畸形响应必须 fail closed。
+
+以下第 1–10 节描述现有 V2 验证通道。V4 实现完成后会补充同一文件中的 Rust 规划器、Profile
+注册表和路由细节，但不会改变这条 V2 历史兼容通道。
+
 ## 1. Why this is not just another program shape
 
 The servo path works because the program fully determines the motion: the server reads

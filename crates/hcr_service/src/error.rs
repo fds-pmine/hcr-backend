@@ -1,6 +1,9 @@
 //! Service failures, and how they become wire errors.
 
-use hcr_contract::{HcrError, HcrErrorCode};
+use hcr_contract::{
+    CutterGridCoord, CutterGridPlanningErrorCodeV4, CutterGridPlanningStageV4, HcrError,
+    HcrErrorCode,
+};
 use hcr_sim::{CutterRejection, SimError};
 
 /// Everything the service layer can fail with.
@@ -48,6 +51,21 @@ pub enum ServiceError {
         /// learner cannot act on "waypoint 118 sits 0.043 off the straight path".
         detail: String,
     },
+    /// A valid V4 Cutter Grid program could not be planned by the server.
+    TrajectoryPlanningFailed {
+        /// Stable V4 planning failure category.
+        planner_code: CutterGridPlanningErrorCodeV4,
+        /// Planning pipeline stage that produced the failure.
+        stage: CutterGridPlanningStageV4,
+        /// Blockly block to highlight, when attributable.
+        field: Option<String>,
+        /// Visible action index, when known.
+        action_index: Option<u32>,
+        /// Action retried with the expanded candidate budget, when relevant.
+        expanded_action_index: Option<u32>,
+        /// Endpoint or failing logical coordinate, when relevant.
+        target_coord: Option<CutterGridCoord>,
+    },
     /// The bank could not supply an item.
     BankExhausted,
     /// Replay capacity is saturated.
@@ -73,6 +91,7 @@ impl ServiceError {
             }
             ServiceError::MatchNotReady(_) => HcrErrorCode::MatchNotReady,
             ServiceError::TrajectoryRejected { .. } => HcrErrorCode::TrajectoryRejected,
+            ServiceError::TrajectoryPlanningFailed { .. } => HcrErrorCode::TrajectoryPlanningFailed,
             ServiceError::BankExhausted => HcrErrorCode::BankExhausted,
             ServiceError::RateLimited => HcrErrorCode::RateLimited,
             ServiceError::ReplayTimeout => HcrErrorCode::ReplayTimeout,
@@ -95,6 +114,32 @@ impl ServiceError {
                 // that wants to distinguish them can read one key while one that
                 // does not still gets a usable `TRAJECTORY_REJECTED`.
                 let error = error.with_detail("rejection", rejection.as_str());
+                match field {
+                    Some(field) => error.with_field(field.clone()),
+                    None => error,
+                }
+            }
+            ServiceError::TrajectoryPlanningFailed {
+                planner_code,
+                stage,
+                field,
+                action_index,
+                expanded_action_index,
+                target_coord,
+            } => {
+                let mut error = error
+                    .with_detail("plannerCode", planner_code.as_str())
+                    .with_detail("stage", stage.as_str());
+                if let Some(action_index) = action_index {
+                    error = error.with_detail("actionIndex", action_index.to_string());
+                }
+                if let Some(expanded_action_index) = expanded_action_index {
+                    error =
+                        error.with_detail("expandedActionIndex", expanded_action_index.to_string());
+                }
+                if let Some([x, y, z]) = *target_coord {
+                    error = error.with_detail("targetCoord", format!("{x},{y},{z}"));
+                }
                 match field {
                     Some(field) => error.with_field(field.clone()),
                     None => error,
@@ -131,6 +176,9 @@ impl std::fmt::Display for ServiceError {
             // Likewise: the measured detail goes to `details`, not to the player.
             ServiceError::TrajectoryRejected { rejection, .. } => {
                 write!(f, "{}", rejection.message())
+            }
+            ServiceError::TrajectoryPlanningFailed { planner_code, .. } => {
+                write!(f, "Cutter Grid planning failed: {}.", planner_code.as_str())
             }
             ServiceError::BankExhausted => {
                 write!(f, "The question bank has no suitable item available.")

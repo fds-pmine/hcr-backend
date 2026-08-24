@@ -195,10 +195,33 @@ async fn error_codes_map_to_the_documented_statuses() {
     assert_eq!(status_for(HcrErrorCode::Unauthorized), 401);
     assert_eq!(status_for(HcrErrorCode::ChallengeNotFound), 404);
     assert_eq!(status_for(HcrErrorCode::ProgramTooLarge), 422);
+    assert_eq!(status_for(HcrErrorCode::TrajectoryPlanningFailed), 422);
     assert_eq!(status_for(HcrErrorCode::ItemRefInvalid), 409);
     assert_eq!(status_for(HcrErrorCode::RateLimited), 429);
     assert_eq!(status_for(HcrErrorCode::ReplayTimeout), 504);
     assert_eq!(status_for(HcrErrorCode::Internal), 500);
+}
+
+#[test]
+fn compact_ptp_planning_failure_preserves_block_and_coordinate_context() {
+    let failure = ServiceError::TrajectoryPlanningFailed {
+        planner_code: CutterGridPlanningErrorCodeV4::EndpointPtpDisconnected,
+        stage: CutterGridPlanningStageV4::PtpEdge,
+        field: Some("forward-3".into()),
+        action_index: Some(2),
+        expanded_action_index: Some(2),
+        target_coord: Some([-2, 6, -3]),
+    };
+
+    let wire = failure.to_wire();
+    assert_eq!(wire.code, HcrErrorCode::TrajectoryPlanningFailed);
+    assert_eq!(wire.field.as_deref(), Some("forward-3"));
+    let details = wire.details.expect("planning diagnostics");
+    assert_eq!(details.get("plannerCode").map(String::as_str), Some("endpoint-ptp-disconnected"));
+    assert_eq!(details.get("stage").map(String::as_str), Some("ptp-edge"));
+    assert_eq!(details.get("actionIndex").map(String::as_str), Some("2"));
+    assert_eq!(details.get("expandedActionIndex").map(String::as_str), Some("2"));
+    assert_eq!(details.get("targetCoord").map(String::as_str), Some("-2,6,-3"));
 }
 
 // ---------------------------------------------------------------------------

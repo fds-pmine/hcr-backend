@@ -147,7 +147,8 @@ pub fn status_for(code: HcrErrorCode) -> u16 {
         HcrErrorCode::ProgramInvalid
         | HcrErrorCode::ProgramTooLarge
         | HcrErrorCode::WeightsInvalid
-        | HcrErrorCode::TrajectoryRejected => 422,
+        | HcrErrorCode::TrajectoryRejected
+        | HcrErrorCode::TrajectoryPlanningFailed => 422,
         HcrErrorCode::ItemRefInvalid
         | HcrErrorCode::SessionTerminated
         | HcrErrorCode::MatchNotReady

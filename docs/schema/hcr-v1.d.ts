@@ -144,6 +144,8 @@ export type HcrErrorCode =
   | 'MATCH_NOT_READY'
   /** A Cutter Grid trajectory failed verification. `details.rejection` names which audit. */
   | 'TRAJECTORY_REJECTED'
+  /** A valid V4 Cutter Grid program could not be planned. `details.plannerCode` names the stage failure. */
+  | 'TRAJECTORY_PLANNING_FAILED'
   | 'DEVICE_OFFLINE' | 'DEVICE_BUSY'
   | 'REPLAY_TIMEOUT' | 'RATE_LIMITED' | 'INTERNAL';
 
@@ -322,6 +324,217 @@ export interface CutterTrajectoryPlan {
 export interface CutterGridSubmission {
   program: CutterGridProgram;
   plan: CutterTrajectoryPlan;
+}
+
+// --- Cutter Grid V4 server planning ---------------------------------------
+//
+// V2 above remains a read-only, client-uploaded trajectory compatibility path.
+// These V4 types are deliberately independent: the browser sends only the
+// program and Challenge reference; the server owns the certified Profile and
+// returns the compact PTP plan it created.
+
+export type CutterGridProgramV4 = CutterGridProgram & {
+  plannerVersion: 'cutter-grid-compact-ptp-v4';
+};
+
+export interface CutterGridBoundsV4 {
+  min: CutterGridCoord;
+  max: CutterGridCoord;
+}
+
+export type CutterGridStaticIkStatusV4 =
+  | 'safe-candidate-known'
+  | 'no-safe-candidate-found';
+
+export interface CutterGridNodeProfileV4 {
+  coord: CutterGridCoord;
+  worldPosition: Vec3Tuple;
+  staticIkStatus: CutterGridStaticIkStatusV4;
+  candidateCount: number;
+  seedBudget: number;
+}
+
+export interface CutterTrajectoryBoundaryStateV4 {
+  jointAngles: Record<JointId, number>;
+  jointVelocitiesDegPerSec: Record<JointId, number>;
+  jointAccelerationsDegPerSec2: Record<JointId, number>;
+}
+
+export interface CutterGridSyncPtpPrimitiveV4 {
+  kind: 'sync-ptp';
+  interpolation: 'synchronized-quintic';
+  durationMs: number;
+  start: CutterTrajectoryBoundaryStateV4;
+  end: CutterTrajectoryBoundaryStateV4;
+}
+
+export interface CutterGridContactEventV4 {
+  timeMs: number;
+  voxelKeys: VoxelKey[];
+}
+
+export type CutterGridTrajectoryActionV4 =
+  | {
+      type: 'move';
+      occurrenceId: string;
+      sourceBlockId: string;
+      direction: CutterGridDirection;
+      distance: number;
+      startCoord: CutterGridCoord;
+      endCoord: CutterGridCoord;
+      logicalCommandCount: number;
+      /** Exactly one direct primitive, or one detour waypoint expressed as two primitives. */
+      primitives: [CutterGridSyncPtpPrimitiveV4] | [CutterGridSyncPtpPrimitiveV4, CutterGridSyncPtpPrimitiveV4];
+      contactEvents: CutterGridContactEventV4[];
+      expectedCutVoxels: VoxelKey[];
+    }
+  | {
+      type: 'wait';
+      occurrenceId: string;
+      sourceBlockId: string;
+      durationMs: number;
+      logicalCommandCount: 1;
+      expectedCutVoxels: [];
+    };
+
+export interface CutterGridPositioningPlanV4 {
+  entryOptionId: string;
+  primitives: CutterGridSyncPtpPrimitiveV4[];
+  trajectorySignature: string;
+}
+
+export interface CutterGridJointMotionLimitsV4 {
+  nominalVelocityDegPerSec: number;
+  nominalAccelerationDegPerSec2: number;
+  nominalJerkDegPerSec3: number;
+  maxVelocityDegPerSec: number;
+  maxAccelerationDegPerSec2: number;
+  maxJerkDegPerSec3: number;
+}
+
+export interface CutterGridMotionLimitsV4 {
+  requestedSpeedScale: number;
+  joints: Record<JointId, CutterGridJointMotionLimitsV4>;
+}
+
+export interface CutterGridPlanningDiagnosticsV4 {
+  endpointLayerCount: number;
+  candidateCounts: number[];
+  expandedActionIndex?: number;
+  directPrimitiveCount: number;
+  detourPrimitiveCount: number;
+  minimumHeadClearance: number;
+  minimumJointLimitMargin: number;
+  maximumNormalizedJointStep: number;
+  maximumEndEffectorChordDeviation: number;
+  requestedSpeedScale: number;
+  actualSpeedScale: number;
+  maximumVelocityRatio: number;
+  maximumAccelerationRatio: number;
+  maximumJerkRatio: number;
+  adaptiveValidationSampleCount: number;
+}
+
+export interface CutterTrajectoryPlanV4 {
+  kind: 'cutter-grid-trajectory';
+  version: 4;
+  plannerVersion: 'cutter-grid-compact-ptp-v4';
+  challengeSignature: string;
+  positioning: CutterGridPositioningPlanV4;
+  startCoord: CutterGridCoord;
+  endCoord: CutterGridCoord;
+  actions: CutterGridTrajectoryActionV4[];
+  expectedResultVoxels: VoxelKey[];
+  estimatedDurationMs: number;
+  executedCommandCount: number;
+  motionLimits: CutterGridMotionLimitsV4;
+  motionLimitsSignature: string;
+  diagnostics: CutterGridPlanningDiagnosticsV4;
+  trajectorySignature: string;
+}
+
+export interface CutterGridEntryOptionV4 {
+  id: string;
+  jointAngles: Record<JointId, number>;
+  positioningPrimitive: CutterGridSyncPtpPrimitiveV4;
+  positioningSignature: string;
+  minimumHeadClearance: number;
+}
+
+export interface CutterGridRoadmapNodeV4 {
+  id: string;
+  jointAngles: Record<JointId, number>;
+  minimumHeadClearance: number;
+}
+
+export interface CutterGridRoadmapEdgeV4 {
+  fromNodeId: string;
+  toNodeId: string;
+}
+
+export interface CutterGridRoadmapV4 {
+  nodes: CutterGridRoadmapNodeV4[];
+  edges: CutterGridRoadmapEdgeV4[];
+  signature: string;
+}
+
+export interface CutterGridCertificationV4 {
+  passed: boolean;
+  entryZeroContact: boolean;
+  referenceCompletion: number;
+  referenceCutVoxels: VoxelKey[];
+  referenceExtraCutVoxels: VoxelKey[];
+  certifiedDirections: CutterGridDirection[];
+  authenticatedEntryOptionIds: string[];
+  referenceTrajectoryCertified: boolean;
+}
+
+/** Server-owned; it is a startup/CI asset and is never accepted from a client. */
+export interface CutterGridProfileV4 {
+  version: 4;
+  plannerVersion: 'cutter-grid-compact-ptp-v4';
+  challengeSignature: string;
+  originHairCoord: CutterGridCoord;
+  originWorldPosition: Vec3Tuple;
+  bounds: CutterGridBoundsV4;
+  entryOptions: CutterGridEntryOptionV4[];
+  nodes: CutterGridNodeProfileV4[];
+  referenceProgram: CutterGridProgramV4;
+  referenceTrajectorySignature: string;
+  certification: CutterGridCertificationV4;
+  motionLimits: CutterGridMotionLimitsV4;
+  motionLimitsSignature: string;
+  roadmap: CutterGridRoadmapV4;
+  profileSignature: string;
+}
+
+export type CutterGridPlanningErrorCodeV4 =
+  | 'planner-not-ready' | 'planning-cancelled' | 'profile-v4-mismatch' | 'out-of-bounds'
+  | 'endpoint-ik-not-converged' | 'endpoint-ik-search-exhausted'
+  | 'endpoint-ptp-disconnected' | 'motion-primitive-budget-exhausted'
+  | 'ptp-collision' | 'ptp-certificate-failed'
+  | 'actual-sweep-certification-failed' | 'plan-signature-mismatch';
+
+export type CutterGridPlanningStageV4 =
+  | 'profile' | 'endpoint' | 'ptp-edge' | 'roadmap'
+  | 'motion-certificate' | 'sweep-certificate' | 'serialization';
+
+/** HTTP `POST /api/v1/cutter-grid/plans` request. The client never uploads a Profile. */
+export interface CutterGridPlanRequestV1 {
+  challengeId: string;
+  challengeVersion: number;
+  program: CutterGridProgramV4;
+}
+
+/** Successful HTTP V4 planning response. `planningDurationMs` is observability, not plan identity. */
+export interface CutterGridPlanResponseV1 {
+  kind: 'cutter-grid-plan-result';
+  version: 1;
+  plannerImplementation: 'hcr-sim-rust';
+  plannerBuild: string;
+  profileSignature: string;
+  planningDurationMs: number;
+  plan: CutterTrajectoryPlanV4;
 }
 
 export interface SubmissionAccepted { submissionId: string; state: 'queued' }
