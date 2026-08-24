@@ -67,9 +67,14 @@ pub use voxel::{
 
 #[cfg(feature = "planner")]
 pub use cutter_grid_v4::{
-    compile_cutter_grid_program_v4, cutter_grid_coord_to_world_v4,
-    enumerate_cutter_grid_ik_candidates_v4, minimum_normalized_joint_limit_margin_v4,
-    normalized_joint_distance_v4, CutterGridCompileErrorV4, CutterGridCompileErrorV4Code,
-    CutterGridExecutableActionV4, CutterGridIkCandidateV4, CutterGridIkEntrySeedV4,
-    CutterGridIkOptionsV4, CutterGridV4CompiledProgram,
+    CUTTER_GRID_V4_EXPANDED_SEED_BUDGET, CUTTER_GRID_V4_INITIAL_SEED_BUDGET,
+    CUTTER_GRID_V4_MIN_PTP_DURATION_MS, CutterGridCompileErrorV4, CutterGridCompileErrorV4Code,
+    CutterGridExecutableActionV4, CutterGridGeometryActionV4, CutterGridIkCandidateV4,
+    CutterGridIkEntrySeedV4, CutterGridIkOptionsV4, CutterGridPlanningFailureV4,
+    CutterGridPtpCertificateV4, CutterGridPtpSampleV4, CutterGridV4CompiledProgram,
+    CutterGridV4GeometryPlan, certify_cutter_grid_sync_ptp_geometry_v4,
+    compile_cutter_grid_program_v4, create_cutter_grid_sync_ptp_primitive_v4,
+    cutter_grid_coord_to_world_v4, enumerate_cutter_grid_ik_candidates_v4,
+    evaluate_cutter_grid_sync_ptp_v4, minimum_normalized_joint_limit_margin_v4,
+    normalized_joint_distance_v4, plan_cutter_grid_v4_geometry,
 };
