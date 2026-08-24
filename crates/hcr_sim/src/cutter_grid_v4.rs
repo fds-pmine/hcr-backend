@@ -12,6 +12,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
+use serde::Serialize;
+
 use hcr_contract::{
     CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION, ChallengeDefinition, CutterGridCoord,
     CutterGridDirection, CutterGridNode, CutterGridProgramV4, JointConfig, JointId, Vec3,
@@ -21,7 +23,7 @@ use hcr_contract::{
 use crate::collision::{find_robot_head_collision, measure_robot_head_clearance};
 use crate::kinematics::compute_robot_pose;
 use crate::state::JointAngles;
-use crate::voxel::voxel_coord_to_world;
+use crate::voxel::{VoxelSet, coord_to_key, find_swept_voxel_hits, voxel_coord_to_world};
 
 /// V4's fixed DLS numerical parameters, shared with the TypeScript Worker.
 pub const CUTTER_GRID_V4_IK_MAX_ITERATIONS: usize = 80;
@@ -934,6 +936,19 @@ fn radians_to_degrees(value: f64) -> f64 {
 pub const CUTTER_GRID_V4_MIN_PTP_DURATION_MS: f64 = 160.0;
 /// Maximum joint change between geometric PTP certificate samples.
 pub const CUTTER_GRID_V4_PTP_MAX_JOINT_SAMPLE_DELTA_DEG: f64 = 0.5;
+/// Fixed upper bound on one compact PTP retiming loop.
+pub const CUTTER_GRID_V4_MAX_RETIMING_ATTEMPTS: usize = 48;
+/// Adaptive certificate starts with at least eight intervals.
+pub const CUTTER_GRID_V4_ADAPTIVE_MIN_SUBDIVISION_DEPTH: usize = 3;
+/// Adaptive certificate never expands an interval beyond this depth.
+pub const CUTTER_GRID_V4_ADAPTIVE_MAX_SUBDIVISION_DEPTH: usize = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtpCertificateFailureV4 {
+    JointLimit,
+    HeadCollision,
+    SamplingLimit,
+}
 
 /// A sampled synchronized PTP state used only for geometry certification.
 #[derive(Debug, Clone, PartialEq)]
@@ -963,6 +978,40 @@ pub struct CutterGridPtpCertificateV4 {
     pub maximum_normalized_joint_step: f64,
     /// Number of checked samples, including both endpoints.
     pub sample_count: u32,
+}
+
+/// Exact dynamic-limit ratios for a compact PTP primitive.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CutterGridPtpDynamicsV4 {
+    /// Largest analytic speed / hard-speed-limit ratio.
+    pub maximum_velocity_ratio: f64,
+    /// Largest analytic acceleration / hard-acceleration-limit ratio.
+    pub maximum_acceleration_ratio: f64,
+    /// Largest analytic jerk / hard-jerk-limit ratio.
+    pub maximum_jerk_ratio: f64,
+    /// All hard limits are satisfied.
+    pub valid: bool,
+}
+
+/// Adaptive collision proof. Dense samples remain planner-local evidence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CutterGridPtpAdaptiveCertificateV4 {
+    /// Ordered PTP samples used by the actual tool sweep.
+    pub samples: Vec<CutterGridPtpSampleV4>,
+    /// Minimum signed head clearance.
+    pub minimum_head_clearance: f64,
+    /// Minimum normalized joint-limit margin.
+    pub minimum_joint_limit_margin: f64,
+    /// Largest normalized joint step between retained samples.
+    pub maximum_normalized_joint_step: f64,
+}
+
+#[derive(Debug, Clone)]
+struct RetimedPtpV4 {
+    primitive: hcr_contract::CutterGridSyncPtpPrimitiveV4,
+    certificate: CutterGridPtpAdaptiveCertificateV4,
+    dynamics: CutterGridPtpDynamicsV4,
+    maximum_end_effector_chord_deviation: f64,
 }
 
 /// Planner failure with enough context for the service to create a wire error.
@@ -1064,6 +1113,31 @@ pub fn create_cutter_grid_sync_ptp_primitive_v4(
     }
 }
 
+/// Create a synchronized quintic primitive with explicit boundary derivatives.
+///
+/// This is used only for a certified two-primitive detour.  It refuses an
+/// incomplete or non-finite boundary rather than clamping it into a different
+/// physical command.
+pub fn create_cutter_grid_sync_ptp_with_boundary_states_v4(
+    challenge: &ChallengeDefinition,
+    start: &hcr_contract::CutterTrajectoryBoundaryStateV4,
+    end: &hcr_contract::CutterTrajectoryBoundaryStateV4,
+    duration_ms: f64,
+) -> Option<hcr_contract::CutterGridSyncPtpPrimitiveV4> {
+    if !duration_ms.is_finite() || duration_ms < CUTTER_GRID_V4_MIN_PTP_DURATION_MS {
+        return None;
+    }
+    let start = ordered_boundary_state(challenge, start)?;
+    let end = ordered_boundary_state(challenge, end)?;
+    Some(hcr_contract::CutterGridSyncPtpPrimitiveV4 {
+        kind: "sync-ptp".into(),
+        interpolation: "synchronized-quintic".into(),
+        duration_ms,
+        start,
+        end,
+    })
+}
+
 /// Evaluate a compact quintic PTP primitive at a clamped absolute time.
 pub fn evaluate_cutter_grid_sync_ptp_v4(
     challenge: &ChallengeDefinition,
@@ -1077,12 +1151,14 @@ pub fn evaluate_cutter_grid_sync_ptp_v4(
     {
         return None;
     }
+    if time_ms <= 0.0 {
+        return evaluate_ptp_boundary_v4(challenge, &primitive.start, 0.0);
+    }
+    if time_ms >= primitive.duration_ms {
+        return evaluate_ptp_boundary_v4(challenge, &primitive.end, primitive.duration_ms);
+    }
     let seconds = primitive.duration_ms / 1_000.0;
-    let u = clamp(time_ms / primitive.duration_ms, 0.0, 1.0);
-    let position_factor = 10.0 * u.powi(3) - 15.0 * u.powi(4) + 6.0 * u.powi(5);
-    let velocity_factor = (30.0 * u.powi(2) - 60.0 * u.powi(3) + 30.0 * u.powi(4)) / seconds;
-    let acceleration_factor = (60.0 * u - 180.0 * u.powi(2) + 120.0 * u.powi(3)) / seconds.powi(2);
-    let jerk_factor = (60.0 - 360.0 * u + 360.0 * u.powi(2)) / seconds.powi(3);
+    let time_seconds = clamp(time_ms, 0.0, primitive.duration_ms) / 1_000.0;
     let mut joint_angles = BTreeMap::new();
     let mut velocities = BTreeMap::new();
     let mut accelerations = BTreeMap::new();
@@ -1090,11 +1166,40 @@ pub fn evaluate_cutter_grid_sync_ptp_v4(
     for joint in &challenge.robot_config.joints {
         let start = primitive.start.joint_angles.get(&joint.id).copied()?;
         let end = primitive.end.joint_angles.get(&joint.id).copied()?;
-        let delta = end - start;
-        joint_angles.insert(joint.id.clone(), start + delta * position_factor);
-        velocities.insert(joint.id.clone(), delta * velocity_factor);
-        accelerations.insert(joint.id.clone(), delta * acceleration_factor);
-        jerks.insert(joint.id.clone(), delta * jerk_factor);
+        let start_velocity = primitive
+            .start
+            .joint_velocities_deg_per_sec
+            .get(&joint.id)
+            .copied()?;
+        let start_acceleration = primitive
+            .start
+            .joint_accelerations_deg_per_sec2
+            .get(&joint.id)
+            .copied()?;
+        let end_velocity = primitive
+            .end
+            .joint_velocities_deg_per_sec
+            .get(&joint.id)
+            .copied()?;
+        let end_acceleration = primitive
+            .end
+            .joint_accelerations_deg_per_sec2
+            .get(&joint.id)
+            .copied()?;
+        let curve = quintic_boundary_curve_v4(
+            start,
+            start_velocity,
+            start_acceleration,
+            end,
+            end_velocity,
+            end_acceleration,
+            seconds,
+            time_seconds,
+        );
+        joint_angles.insert(joint.id.clone(), curve.position);
+        velocities.insert(joint.id.clone(), curve.velocity);
+        accelerations.insert(joint.id.clone(), curve.acceleration);
+        jerks.insert(joint.id.clone(), curve.jerk);
     }
     let pose = compute_robot_pose(
         &challenge.robot_config,
@@ -1179,6 +1284,131 @@ pub fn certify_cutter_grid_sync_ptp_geometry_v4(
         minimum_joint_limit_margin,
         maximum_normalized_joint_step,
         sample_count: sample_count + 1,
+    })
+}
+
+/// Measure conservative exact extrema of the serialized quintic's q/v/a/j.
+pub fn measure_cutter_grid_sync_ptp_dynamics_v4(
+    challenge: &ChallengeDefinition,
+    primitive: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+    limits: &hcr_contract::CutterGridMotionLimitsV4,
+) -> Option<CutterGridPtpDynamicsV4> {
+    let duration_seconds = primitive.duration_ms / 1_000.0;
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return None;
+    }
+    let mut maximum_velocity_ratio = 0.0_f64;
+    let mut maximum_acceleration_ratio = 0.0_f64;
+    let mut maximum_jerk_ratio = 0.0_f64;
+    for joint in &challenge.robot_config.joints {
+        let joint_limits = limits.joints.get(&joint.id)?;
+        if joint_limits.max_velocity_deg_per_sec <= 0.0
+            || joint_limits.max_acceleration_deg_per_sec2 <= 0.0
+            || joint_limits.max_jerk_deg_per_sec3 <= 0.0
+        {
+            return None;
+        }
+        let coefficients = quintic_coefficients_v4(
+            primitive.start.joint_angles.get(&joint.id).copied()?,
+            primitive
+                .start
+                .joint_velocities_deg_per_sec
+                .get(&joint.id)
+                .copied()?,
+            primitive
+                .start
+                .joint_accelerations_deg_per_sec2
+                .get(&joint.id)
+                .copied()?,
+            primitive.end.joint_angles.get(&joint.id).copied()?,
+            primitive
+                .end
+                .joint_velocities_deg_per_sec
+                .get(&joint.id)
+                .copied()?,
+            primitive
+                .end
+                .joint_accelerations_deg_per_sec2
+                .get(&joint.id)
+                .copied()?,
+            duration_seconds,
+        )?;
+        let bounds = exact_quintic_dynamic_bounds_v4(coefficients, duration_seconds);
+        maximum_velocity_ratio = maximum_velocity_ratio
+            .max(bounds.maximum_velocity / joint_limits.max_velocity_deg_per_sec);
+        maximum_acceleration_ratio = maximum_acceleration_ratio
+            .max(bounds.maximum_acceleration / joint_limits.max_acceleration_deg_per_sec2);
+        maximum_jerk_ratio =
+            maximum_jerk_ratio.max(bounds.maximum_jerk / joint_limits.max_jerk_deg_per_sec3);
+    }
+    Some(CutterGridPtpDynamicsV4 {
+        maximum_velocity_ratio,
+        maximum_acceleration_ratio,
+        maximum_jerk_ratio,
+        valid: maximum_velocity_ratio <= 1.0 + 1e-12
+            && maximum_acceleration_ratio <= 1.0 + 1e-12
+            && maximum_jerk_ratio <= 1.0 + 1e-12,
+    })
+}
+
+/// Prove a compact PTP safe using deterministic adaptive subdivision.
+pub fn certify_cutter_grid_sync_ptp_adaptive_v4(
+    challenge: &ChallengeDefinition,
+    primitive: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+) -> Result<CutterGridPtpAdaptiveCertificateV4, hcr_contract::CutterGridPlanningErrorCodeV4> {
+    let start = evaluate_cutter_grid_sync_ptp_v4(challenge, primitive, 0.0)
+        .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+    let end = evaluate_cutter_grid_sync_ptp_v4(challenge, primitive, primitive.duration_ms)
+        .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+    let mut samples = Vec::new();
+    adaptive_ptp_visit_v4(challenge, primitive, start, end, 0, &mut samples).map_err(|reason| {
+        match reason {
+            PtpCertificateFailureV4::JointLimit | PtpCertificateFailureV4::HeadCollision => {
+                hcr_contract::CutterGridPlanningErrorCodeV4::PtpCollision
+            }
+            PtpCertificateFailureV4::SamplingLimit => {
+                hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed
+            }
+        }
+    })?;
+    samples.sort_by(|left, right| compare_number(left.time_ms, right.time_ms));
+    samples.dedup_by(|left, right| (left.time_ms - right.time_ms).abs() <= 1e-9);
+    if samples.len() < 2 {
+        return Err(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed);
+    }
+    let mut minimum_head_clearance = f64::INFINITY;
+    let mut minimum_joint_limit_margin = f64::INFINITY;
+    let mut maximum_normalized_joint_step = 0.0_f64;
+    for (index, sample) in samples.iter().enumerate() {
+        let pose = compute_robot_pose(
+            &challenge.robot_config,
+            &JointAngles::from_ordered(sample.joint_angles.clone()),
+        )
+        .map_err(|_| hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+        minimum_head_clearance = minimum_head_clearance.min(measure_robot_head_clearance(
+            &pose,
+            &challenge.voxel_config,
+            &challenge.robot_config.geometry,
+        ));
+        minimum_joint_limit_margin =
+            minimum_joint_limit_margin.min(minimum_normalized_joint_limit_margin_v4(
+                &sample.joint_angles,
+                &challenge.robot_config.joints,
+            ));
+        if index > 0 {
+            maximum_normalized_joint_step =
+                maximum_normalized_joint_step.max(normalized_joint_distance_v4(
+                    &samples[index - 1].joint_angles,
+                    &sample.joint_angles,
+                    &challenge.robot_config.joints,
+                ));
+        }
+    }
+    Ok(CutterGridPtpAdaptiveCertificateV4 {
+        samples,
+        minimum_head_clearance,
+        minimum_joint_limit_margin,
+        maximum_normalized_joint_step,
     })
 }
 
@@ -1282,6 +1512,180 @@ pub fn plan_cutter_grid_v4_geometry(
     );
     failure.expanded_action_index = expanded_action_index;
     Err(failure)
+}
+
+/// Build a complete, dynamically certified and locally signed V4 plan.
+pub fn plan_cutter_grid_v4(
+    challenge: &ChallengeDefinition,
+    compiled: &CutterGridV4CompiledProgram,
+    profile: &hcr_contract::CutterGridProfileV4,
+) -> Result<hcr_contract::CutterTrajectoryPlanV4, CutterGridPlanningFailureV4> {
+    let geometry = plan_cutter_grid_v4_geometry(challenge, compiled, profile)?;
+    finalize_cutter_grid_v4_geometry_plan(challenge, compiled, profile, geometry)
+}
+
+fn finalize_cutter_grid_v4_geometry_plan(
+    challenge: &ChallengeDefinition,
+    compiled: &CutterGridV4CompiledProgram,
+    profile: &hcr_contract::CutterGridProfileV4,
+    geometry: CutterGridV4GeometryPlan,
+) -> Result<hcr_contract::CutterTrajectoryPlanV4, CutterGridPlanningFailureV4> {
+    let positioning = retime_one_ptp_v4(
+        challenge,
+        &geometry.positioning_primitive,
+        &profile.motion_limits,
+    )
+    .map_err(|code| {
+        system_failure_v4(
+            code,
+            hcr_contract::CutterGridPlanningStageV4::MotionCertificate,
+        )
+    })?;
+    assert_zero_hair_contact_v4(challenge, &positioning.certificate.samples).map_err(|code| {
+        system_failure_v4(
+            code,
+            hcr_contract::CutterGridPlanningStageV4::SweepCertificate,
+        )
+    })?;
+
+    let mut metrics = DynamicMetricsV4::default();
+    merge_dynamic_metrics_v4(&mut metrics, &positioning);
+    let mut remaining_hair = challenge
+        .initial_hair
+        .voxels
+        .iter()
+        .copied()
+        .collect::<crate::voxel::VoxelSet>();
+    let mut actions = Vec::with_capacity(geometry.actions.len());
+    for (action_index, geometry_action) in geometry.actions.iter().enumerate() {
+        match geometry_action {
+            CutterGridGeometryActionV4::Wait { action } => {
+                let CutterGridExecutableActionV4::Wait {
+                    occurrence_id,
+                    source_block_id,
+                    duration_ms,
+                    logical_command_count,
+                } = action
+                else {
+                    return Err(serialization_failure_v4(action_index, action));
+                };
+                actions.push(hcr_contract::CutterGridTrajectoryActionV4::Wait {
+                    occurrence_id: occurrence_id.clone(),
+                    source_block_id: source_block_id.clone(),
+                    duration_ms: *duration_ms,
+                    logical_command_count: *logical_command_count,
+                    expected_cut_voxels: Vec::new(),
+                });
+            }
+            CutterGridGeometryActionV4::Move { action, primitives } => {
+                let CutterGridExecutableActionV4::Move {
+                    occurrence_id,
+                    source_block_id,
+                    direction,
+                    distance,
+                    start_coord,
+                    end_coord,
+                    logical_command_count,
+                } = action
+                else {
+                    return Err(serialization_failure_v4(action_index, action));
+                };
+                let certified = retime_move_ptps_v4(challenge, primitives, &profile.motion_limits)
+                    .map_err(|code| {
+                        action_failure_v4(
+                            code,
+                            hcr_contract::CutterGridPlanningStageV4::MotionCertificate,
+                            action_index,
+                            action,
+                        )
+                    })?;
+                for primitive in &certified {
+                    merge_dynamic_metrics_v4(&mut metrics, primitive);
+                }
+                let sweep = collect_actual_sweep_v4(challenge, &certified, &remaining_hair);
+                for hit in &sweep.cut_voxels {
+                    remaining_hair.remove(hit);
+                }
+                actions.push(hcr_contract::CutterGridTrajectoryActionV4::Move {
+                    occurrence_id: occurrence_id.clone(),
+                    source_block_id: source_block_id.clone(),
+                    direction: *direction,
+                    distance: *distance,
+                    start_coord: *start_coord,
+                    end_coord: *end_coord,
+                    logical_command_count: *logical_command_count,
+                    primitives: certified.into_iter().map(|item| item.primitive).collect(),
+                    contact_events: sweep.contact_events,
+                    expected_cut_voxels: sorted_voxel_keys_v4(&sweep.cut_voxels),
+                });
+            }
+        }
+    }
+    let entry_signature = stable_fnv_signature_v4(&positioning.primitive).map_err(|_| {
+        system_failure_v4(
+            hcr_contract::CutterGridPlanningErrorCodeV4::PlanSignatureMismatch,
+            hcr_contract::CutterGridPlanningStageV4::Serialization,
+        )
+    })?;
+    let estimated_duration_ms = actions
+        .iter()
+        .map(|action| match action {
+            hcr_contract::CutterGridTrajectoryActionV4::Move { primitives, .. } => primitives
+                .iter()
+                .map(|primitive| primitive.duration_ms)
+                .sum::<f64>(),
+            hcr_contract::CutterGridTrajectoryActionV4::Wait { duration_ms, .. } => *duration_ms,
+        })
+        .sum();
+    let mut diagnostics = geometry.diagnostics;
+    diagnostics.actual_speed_scale =
+        profile.motion_limits.requested_speed_scale * metrics.maximum_velocity_ratio.min(1.0);
+    diagnostics.maximum_velocity_ratio = metrics.maximum_velocity_ratio;
+    diagnostics.maximum_acceleration_ratio = metrics.maximum_acceleration_ratio;
+    diagnostics.maximum_jerk_ratio = metrics.maximum_jerk_ratio;
+    diagnostics.adaptive_validation_sample_count = metrics.adaptive_validation_sample_count;
+    diagnostics.maximum_normalized_joint_step = diagnostics
+        .maximum_normalized_joint_step
+        .max(metrics.maximum_normalized_joint_step);
+    diagnostics.maximum_end_effector_chord_deviation = diagnostics
+        .maximum_end_effector_chord_deviation
+        .max(metrics.maximum_end_effector_chord_deviation);
+    diagnostics.minimum_head_clearance = finite_min_v4(
+        diagnostics.minimum_head_clearance,
+        metrics.minimum_head_clearance,
+    );
+    diagnostics.minimum_joint_limit_margin = finite_min_v4(
+        diagnostics.minimum_joint_limit_margin,
+        metrics.minimum_joint_limit_margin,
+    );
+    let mut plan = hcr_contract::CutterTrajectoryPlanV4 {
+        kind: "cutter-grid-trajectory".into(),
+        version: hcr_contract::CUTTER_TRAJECTORY_PLAN_V4_VERSION,
+        planner_version: CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION.into(),
+        challenge_signature: profile.challenge_signature.clone(),
+        positioning: hcr_contract::CutterGridPositioningPlanV4 {
+            entry_option_id: geometry.entry_option_id,
+            primitives: vec![positioning.primitive],
+            trajectory_signature: entry_signature,
+        },
+        start_coord: geometry.start_coord,
+        end_coord: geometry.end_coord,
+        actions,
+        expected_result_voxels: sorted_voxel_keys_v4(&remaining_hair),
+        estimated_duration_ms,
+        executed_command_count: compiled.executed_command_count,
+        motion_limits: profile.motion_limits.clone(),
+        motion_limits_signature: profile.motion_limits_signature.clone(),
+        diagnostics,
+        trajectory_signature: String::new(),
+    };
+    plan.trajectory_signature = stable_plan_signature_v4(&plan).map_err(|_| {
+        system_failure_v4(
+            hcr_contract::CutterGridPlanningErrorCodeV4::PlanSignatureMismatch,
+            hcr_contract::CutterGridPlanningStageV4::Serialization,
+        )
+    })?;
+    Ok(plan)
 }
 
 #[derive(Debug, Clone)]
@@ -1981,6 +2385,839 @@ fn within_joint_limits(angles: &BTreeMap<JointId, f64>, joints: &[JointConfig]) 
     })
 }
 
+fn ordered_boundary_state(
+    challenge: &ChallengeDefinition,
+    state: &hcr_contract::CutterTrajectoryBoundaryStateV4,
+) -> Option<hcr_contract::CutterTrajectoryBoundaryStateV4> {
+    let mut joint_angles = BTreeMap::new();
+    let mut joint_velocities_deg_per_sec = BTreeMap::new();
+    let mut joint_accelerations_deg_per_sec2 = BTreeMap::new();
+    for joint in &challenge.robot_config.joints {
+        let angle = state.joint_angles.get(&joint.id).copied()?;
+        let velocity = state.joint_velocities_deg_per_sec.get(&joint.id).copied()?;
+        let acceleration = state
+            .joint_accelerations_deg_per_sec2
+            .get(&joint.id)
+            .copied()?;
+        if !angle.is_finite() || !velocity.is_finite() || !acceleration.is_finite() {
+            return None;
+        }
+        joint_angles.insert(joint.id.clone(), angle);
+        joint_velocities_deg_per_sec.insert(joint.id.clone(), velocity);
+        joint_accelerations_deg_per_sec2.insert(joint.id.clone(), acceleration);
+    }
+    Some(hcr_contract::CutterTrajectoryBoundaryStateV4 {
+        joint_angles,
+        joint_velocities_deg_per_sec,
+        joint_accelerations_deg_per_sec2,
+    })
+}
+
+fn evaluate_ptp_boundary_v4(
+    challenge: &ChallengeDefinition,
+    boundary: &hcr_contract::CutterTrajectoryBoundaryStateV4,
+    time_ms: f64,
+) -> Option<CutterGridPtpSampleV4> {
+    let joint_angles = ordered_boundary_state(challenge, boundary)?.joint_angles;
+    let pose = compute_robot_pose(
+        &challenge.robot_config,
+        &JointAngles::from_ordered(joint_angles.clone()),
+    )
+    .ok()?;
+    Some(CutterGridPtpSampleV4 {
+        time_ms,
+        joint_angles,
+        joint_velocities_deg_per_sec: boundary.joint_velocities_deg_per_sec.clone(),
+        joint_accelerations_deg_per_sec2: boundary.joint_accelerations_deg_per_sec2.clone(),
+        // Mirrors the browser evaluator's boundary representation. Analytic
+        // jerk limits are measured separately from quintic coefficients.
+        joint_jerks_deg_per_sec3: challenge
+            .robot_config
+            .joints
+            .iter()
+            .map(|joint| (joint.id.clone(), 0.0))
+            .collect(),
+        end_effector: pose.end_effector,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuinticCoefficientsV4 {
+    a0: f64,
+    a1: f64,
+    a2: f64,
+    a3: f64,
+    a4: f64,
+    a5: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuinticDynamicBoundsV4 {
+    maximum_velocity: f64,
+    maximum_acceleration: f64,
+    maximum_jerk: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuinticCurveV4 {
+    position: f64,
+    velocity: f64,
+    acceleration: f64,
+    jerk: f64,
+}
+
+fn quintic_boundary_curve_v4(
+    start_position: f64,
+    start_velocity: f64,
+    start_acceleration: f64,
+    end_position: f64,
+    end_velocity: f64,
+    end_acceleration: f64,
+    duration_seconds: f64,
+    time_seconds: f64,
+) -> QuinticCurveV4 {
+    let coefficients = quintic_coefficients_v4(
+        start_position,
+        start_velocity,
+        start_acceleration,
+        end_position,
+        end_velocity,
+        end_acceleration,
+        duration_seconds,
+    )
+    .expect("validated PTP duration is positive and finite");
+    let time2 = time_seconds.powi(2);
+    let time3 = time_seconds.powi(3);
+    let time4 = time_seconds.powi(4);
+    let time5 = time_seconds.powi(5);
+    QuinticCurveV4 {
+        position: coefficients.a0
+            + coefficients.a1 * time_seconds
+            + coefficients.a2 * time2
+            + coefficients.a3 * time3
+            + coefficients.a4 * time4
+            + coefficients.a5 * time5,
+        velocity: coefficients.a1
+            + 2.0 * coefficients.a2 * time_seconds
+            + 3.0 * coefficients.a3 * time2
+            + 4.0 * coefficients.a4 * time3
+            + 5.0 * coefficients.a5 * time4,
+        acceleration: 2.0 * coefficients.a2
+            + 6.0 * coefficients.a3 * time_seconds
+            + 12.0 * coefficients.a4 * time2
+            + 20.0 * coefficients.a5 * time3,
+        jerk: 6.0 * coefficients.a3
+            + 24.0 * coefficients.a4 * time_seconds
+            + 60.0 * coefficients.a5 * time2,
+    }
+}
+
+fn quintic_coefficients_v4(
+    start_position: f64,
+    start_velocity: f64,
+    start_acceleration: f64,
+    end_position: f64,
+    end_velocity: f64,
+    end_acceleration: f64,
+    duration_seconds: f64,
+) -> Option<QuinticCoefficientsV4> {
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return None;
+    }
+    let duration2 = duration_seconds.powi(2);
+    let duration3 = duration_seconds.powi(3);
+    let duration4 = duration_seconds.powi(4);
+    let duration5 = duration_seconds.powi(5);
+    Some(QuinticCoefficientsV4 {
+        a0: start_position,
+        a1: start_velocity,
+        a2: start_acceleration / 2.0,
+        a3: (20.0 * (end_position - start_position)
+            - (8.0 * end_velocity + 12.0 * start_velocity) * duration_seconds
+            - (3.0 * start_acceleration - end_acceleration) * duration2)
+            / (2.0 * duration3),
+        a4: (30.0 * (start_position - end_position)
+            + (14.0 * end_velocity + 16.0 * start_velocity) * duration_seconds
+            + (3.0 * start_acceleration - 2.0 * end_acceleration) * duration2)
+            / (2.0 * duration4),
+        a5: (12.0 * (end_position - start_position)
+            - (6.0 * end_velocity + 6.0 * start_velocity) * duration_seconds
+            - (start_acceleration - end_acceleration) * duration2)
+            / (2.0 * duration5),
+    })
+}
+
+fn exact_quintic_dynamic_bounds_v4(
+    coefficients: QuinticCoefficientsV4,
+    duration_seconds: f64,
+) -> QuinticDynamicBoundsV4 {
+    let velocity = |time: f64| quintic_boundary_values_v4(coefficients, time).velocity;
+    let acceleration = |time: f64| quintic_boundary_values_v4(coefficients, time).acceleration;
+    let jerk = |time: f64| quintic_boundary_values_v4(coefficients, time).jerk;
+    let jerk_roots = bounded_quadratic_roots_v4(
+        60.0 * coefficients.a5,
+        24.0 * coefficients.a4,
+        6.0 * coefficients.a3,
+        duration_seconds,
+    );
+    let acceleration_roots = roots_from_monotone_partitions_v4(
+        acceleration,
+        &with_interval_bounds(&jerk_roots, duration_seconds),
+    );
+    let jerk_vertex = if coefficients.a5.abs() <= 1e-15 {
+        Vec::new()
+    } else {
+        bounded_roots_v4(
+            &[-coefficients.a4 / (5.0 * coefficients.a5)],
+            duration_seconds,
+        )
+    };
+    QuinticDynamicBoundsV4 {
+        maximum_velocity: maximum_absolute_v4(
+            velocity,
+            &with_interval_bounds(&acceleration_roots, duration_seconds),
+        ),
+        maximum_acceleration: maximum_absolute_v4(
+            acceleration,
+            &with_interval_bounds(&jerk_roots, duration_seconds),
+        ),
+        maximum_jerk: maximum_absolute_v4(
+            jerk,
+            &with_interval_bounds(&jerk_vertex, duration_seconds),
+        ),
+    }
+}
+
+fn quintic_boundary_values_v4(coefficients: QuinticCoefficientsV4, time: f64) -> QuinticCurveV4 {
+    let time2 = time.powi(2);
+    let time3 = time.powi(3);
+    let time4 = time.powi(4);
+    let time5 = time.powi(5);
+    QuinticCurveV4 {
+        position: coefficients.a0
+            + coefficients.a1 * time
+            + coefficients.a2 * time2
+            + coefficients.a3 * time3
+            + coefficients.a4 * time4
+            + coefficients.a5 * time5,
+        velocity: coefficients.a1
+            + 2.0 * coefficients.a2 * time
+            + 3.0 * coefficients.a3 * time2
+            + 4.0 * coefficients.a4 * time3
+            + 5.0 * coefficients.a5 * time4,
+        acceleration: 2.0 * coefficients.a2
+            + 6.0 * coefficients.a3 * time
+            + 12.0 * coefficients.a4 * time2
+            + 20.0 * coefficients.a5 * time3,
+        jerk: 6.0 * coefficients.a3
+            + 24.0 * coefficients.a4 * time
+            + 60.0 * coefficients.a5 * time2,
+    }
+}
+
+fn bounded_quadratic_roots_v4(a: f64, b: f64, c: f64, maximum: f64) -> Vec<f64> {
+    if a.abs() <= 1e-15 {
+        return if b.abs() <= 1e-15 {
+            Vec::new()
+        } else {
+            bounded_roots_v4(&[-c / b], maximum)
+        };
+    }
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < -1e-12 {
+        return Vec::new();
+    }
+    let root = libm::sqrt(discriminant.max(0.0));
+    bounded_roots_v4(&[(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)], maximum)
+}
+
+fn roots_from_monotone_partitions_v4(
+    evaluate: impl Fn(f64) -> f64,
+    partitions: &[f64],
+) -> Vec<f64> {
+    let mut ordered = partitions
+        .iter()
+        .copied()
+        .map(|value| round_precision_v4(value, 12))
+        .collect::<Vec<_>>();
+    ordered.sort_by(|left, right| compare_number(*left, *right));
+    ordered.dedup_by(|left, right| (*left - *right).abs() <= 1e-12);
+    let mut roots = Vec::new();
+    for value in &ordered {
+        if evaluate(*value).abs() <= 1e-9 {
+            roots.push(*value);
+        }
+    }
+    for pair in ordered.windows(2) {
+        let mut low = pair[0];
+        let mut high = pair[1];
+        let mut low_value = evaluate(low);
+        let high_value = evaluate(high);
+        if low_value == 0.0 || high_value == 0.0 || low_value * high_value > 0.0 {
+            continue;
+        }
+        for _ in 0..80 {
+            let middle = (low + high) / 2.0;
+            let middle_value = evaluate(middle);
+            if middle_value == 0.0 {
+                low = middle;
+                high = middle;
+                break;
+            }
+            if low_value * middle_value <= 0.0 {
+                high = middle;
+            } else {
+                low = middle;
+                low_value = middle_value;
+            }
+        }
+        roots.push((low + high) / 2.0);
+    }
+    roots.sort_by(|left, right| compare_number(*left, *right));
+    roots.dedup_by(|left, right| (*left - *right).abs() <= 1e-12);
+    roots
+}
+
+fn bounded_roots_v4(values: &[f64], maximum: f64) -> Vec<f64> {
+    let mut roots = values
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite() && *value > 0.0 && *value < maximum)
+        .map(|value| round_precision_v4(value, 12))
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| compare_number(*left, *right));
+    roots.dedup_by(|left, right| (*left - *right).abs() <= 1e-12);
+    roots
+}
+
+fn with_interval_bounds(interior: &[f64], maximum: f64) -> Vec<f64> {
+    let mut values = Vec::with_capacity(interior.len() + 2);
+    values.push(0.0);
+    values.extend_from_slice(interior);
+    values.push(maximum);
+    values
+}
+
+fn maximum_absolute_v4(evaluate: impl Fn(f64) -> f64, points: &[f64]) -> f64 {
+    points
+        .iter()
+        .map(|time| evaluate(*time).abs())
+        .fold(0.0_f64, f64::max)
+}
+
+fn round_precision_v4(value: f64, digits: i32) -> f64 {
+    let scale = 10.0_f64.powi(digits);
+    (value * scale).round() / scale
+}
+
+fn adaptive_ptp_visit_v4(
+    challenge: &ChallengeDefinition,
+    primitive: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+    start: CutterGridPtpSampleV4,
+    end: CutterGridPtpSampleV4,
+    depth: usize,
+    output: &mut Vec<CutterGridPtpSampleV4>,
+) -> Result<(), PtpCertificateFailureV4> {
+    let middle_time = (start.time_ms + end.time_ms) / 2.0;
+    let middle = evaluate_cutter_grid_sync_ptp_v4(challenge, primitive, middle_time)
+        .ok_or(PtpCertificateFailureV4::SamplingLimit)?;
+    let start_clearance = inspect_ptp_sample_v4(challenge, &start)?;
+    let middle_clearance = inspect_ptp_sample_v4(challenge, &middle)?;
+    let end_clearance = inspect_ptp_sample_v4(challenge, &end)?;
+    let maximum_joint_delta = challenge
+        .robot_config
+        .joints
+        .iter()
+        .map(|joint| {
+            let start_angle = start.joint_angles[&joint.id];
+            let middle_angle = middle.joint_angles[&joint.id];
+            let end_angle = end.joint_angles[&joint.id];
+            (middle_angle - start_angle)
+                .abs()
+                .max((end_angle - middle_angle).abs())
+        })
+        .fold(0.0_f64, f64::max);
+    let interval_clearance = start_clearance.min(middle_clearance).min(end_clearance);
+    let near_head = interval_clearance <= challenge.voxel_config.size;
+    let maximum_joint_limit = if near_head { 0.25 } else { 1.0 };
+    let maximum_end_effector_distance =
+        challenge.voxel_config.size / if near_head { 16.0 } else { 8.0 };
+    let displacement_bound =
+        conservative_link_displacement_bound_v4(challenge, &start.joint_angles, &end.joint_angles);
+    let needs_subdivision = depth < CUTTER_GRID_V4_ADAPTIVE_MIN_SUBDIVISION_DEPTH
+        || maximum_joint_delta > maximum_joint_limit + 1e-12
+        || distance(start.end_effector, end.end_effector) > maximum_end_effector_distance + 1e-12
+        || interval_clearance <= displacement_bound + 1e-12;
+    if needs_subdivision {
+        if depth >= CUTTER_GRID_V4_ADAPTIVE_MAX_SUBDIVISION_DEPTH {
+            return Err(PtpCertificateFailureV4::SamplingLimit);
+        }
+        adaptive_ptp_visit_v4(
+            challenge,
+            primitive,
+            start,
+            middle.clone(),
+            depth + 1,
+            output,
+        )?;
+        adaptive_ptp_visit_v4(challenge, primitive, middle, end, depth + 1, output)?;
+    } else {
+        output.push(start);
+        output.push(middle);
+        output.push(end);
+    }
+    Ok(())
+}
+
+fn inspect_ptp_sample_v4(
+    challenge: &ChallengeDefinition,
+    sample: &CutterGridPtpSampleV4,
+) -> Result<f64, PtpCertificateFailureV4> {
+    if !within_joint_limits(&sample.joint_angles, &challenge.robot_config.joints) {
+        return Err(PtpCertificateFailureV4::JointLimit);
+    }
+    let pose = compute_robot_pose(
+        &challenge.robot_config,
+        &JointAngles::from_ordered(sample.joint_angles.clone()),
+    )
+    .map_err(|_| PtpCertificateFailureV4::JointLimit)?;
+    if find_robot_head_collision(
+        &pose,
+        &challenge.voxel_config,
+        &challenge.robot_config.geometry,
+    )
+    .is_some()
+    {
+        return Err(PtpCertificateFailureV4::HeadCollision);
+    }
+    Ok(measure_robot_head_clearance(
+        &pose,
+        &challenge.voxel_config,
+        &challenge.robot_config.geometry,
+    ))
+}
+
+fn conservative_link_displacement_bound_v4(
+    challenge: &ChallengeDefinition,
+    start: &BTreeMap<JointId, f64>,
+    end: &BTreeMap<JointId, f64>,
+) -> f64 {
+    let geometry = &challenge.robot_config.geometry;
+    let maximum_reach = geometry.upper_arm_length + geometry.forearm_length + geometry.tool_length;
+    let angular_travel_radians = challenge
+        .robot_config
+        .joints
+        .iter()
+        .map(|joint| (end[&joint.id] - start[&joint.id]).abs().to_radians())
+        .sum::<f64>();
+    maximum_reach * angular_travel_radians
+}
+
+fn retime_move_ptps_v4(
+    challenge: &ChallengeDefinition,
+    primitives: &[hcr_contract::CutterGridSyncPtpPrimitiveV4],
+    limits: &hcr_contract::CutterGridMotionLimitsV4,
+) -> Result<Vec<RetimedPtpV4>, hcr_contract::CutterGridPlanningErrorCodeV4> {
+    match primitives {
+        [primitive] => Ok(vec![retime_one_ptp_v4(challenge, primitive, limits)?]),
+        [first, second] => retime_detour_ptps_v4(challenge, first, second, limits),
+        _ => Err(hcr_contract::CutterGridPlanningErrorCodeV4::MotionPrimitiveBudgetExhausted),
+    }
+}
+
+fn retime_one_ptp_v4(
+    challenge: &ChallengeDefinition,
+    geometry: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+    limits: &hcr_contract::CutterGridMotionLimitsV4,
+) -> Result<RetimedPtpV4, hcr_contract::CutterGridPlanningErrorCodeV4> {
+    let mut duration_ms = geometry.duration_ms.max(CUTTER_GRID_V4_MIN_PTP_DURATION_MS);
+    for _ in 0..CUTTER_GRID_V4_MAX_RETIMING_ATTEMPTS {
+        let primitive = create_cutter_grid_sync_ptp_with_boundary_states_v4(
+            challenge,
+            &geometry.start,
+            &geometry.end,
+            duration_ms,
+        )
+        .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+        let dynamics = measure_cutter_grid_sync_ptp_dynamics_v4(challenge, &primitive, limits)
+            .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+        if dynamics.valid {
+            let certificate = certify_cutter_grid_sync_ptp_adaptive_v4(challenge, &primitive)?;
+            return Ok(RetimedPtpV4 {
+                maximum_end_effector_chord_deviation: ptp_chord_deviation_v4(challenge, &primitive)
+                    .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?,
+                primitive,
+                certificate,
+                dynamics,
+            });
+        }
+        duration_ms = round_duration_ms_v4(duration_ms * required_duration_scale_v4(&dynamics));
+    }
+    Err(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)
+}
+
+fn retime_detour_ptps_v4(
+    challenge: &ChallengeDefinition,
+    first_geometry: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+    second_geometry: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+    limits: &hcr_contract::CutterGridMotionLimitsV4,
+) -> Result<Vec<RetimedPtpV4>, hcr_contract::CutterGridPlanningErrorCodeV4> {
+    let mut first_duration_ms = first_geometry
+        .duration_ms
+        .max(CUTTER_GRID_V4_MIN_PTP_DURATION_MS);
+    let mut second_duration_ms = second_geometry
+        .duration_ms
+        .max(CUTTER_GRID_V4_MIN_PTP_DURATION_MS);
+    for _ in 0..CUTTER_GRID_V4_MAX_RETIMING_ATTEMPTS {
+        let shared = shared_detour_boundary_v4(
+            challenge,
+            &first_geometry.start,
+            &first_geometry.end,
+            &second_geometry.end,
+            first_duration_ms,
+            second_duration_ms,
+        )?;
+        let first = create_cutter_grid_sync_ptp_with_boundary_states_v4(
+            challenge,
+            &first_geometry.start,
+            &shared,
+            first_duration_ms,
+        )
+        .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+        let second = create_cutter_grid_sync_ptp_with_boundary_states_v4(
+            challenge,
+            &shared,
+            &second_geometry.end,
+            second_duration_ms,
+        )
+        .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+        let first_dynamics = measure_cutter_grid_sync_ptp_dynamics_v4(challenge, &first, limits)
+            .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+        let second_dynamics = measure_cutter_grid_sync_ptp_dynamics_v4(challenge, &second, limits)
+            .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
+        if first_dynamics.valid && second_dynamics.valid {
+            return Ok(vec![
+                RetimedPtpV4 {
+                    certificate: certify_cutter_grid_sync_ptp_adaptive_v4(challenge, &first)?,
+                    maximum_end_effector_chord_deviation: ptp_chord_deviation_v4(challenge, &first)
+                        .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?,
+                    primitive: first,
+                    dynamics: first_dynamics,
+                },
+                RetimedPtpV4 {
+                    certificate: certify_cutter_grid_sync_ptp_adaptive_v4(challenge, &second)?,
+                    maximum_end_effector_chord_deviation: ptp_chord_deviation_v4(
+                        challenge, &second,
+                    )
+                    .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?,
+                    primitive: second,
+                    dynamics: second_dynamics,
+                },
+            ]);
+        }
+        let scale = required_duration_scale_v4(&first_dynamics)
+            .max(required_duration_scale_v4(&second_dynamics));
+        first_duration_ms = round_duration_ms_v4(first_duration_ms * scale);
+        second_duration_ms = round_duration_ms_v4(second_duration_ms * scale);
+    }
+    Err(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)
+}
+
+fn shared_detour_boundary_v4(
+    challenge: &ChallengeDefinition,
+    start: &hcr_contract::CutterTrajectoryBoundaryStateV4,
+    via: &hcr_contract::CutterTrajectoryBoundaryStateV4,
+    end: &hcr_contract::CutterTrajectoryBoundaryStateV4,
+    first_duration_ms: f64,
+    second_duration_ms: f64,
+) -> Option<hcr_contract::CutterTrajectoryBoundaryStateV4> {
+    let first_seconds = first_duration_ms / 1_000.0;
+    let second_seconds = second_duration_ms / 1_000.0;
+    if first_seconds <= 0.0 || second_seconds <= 0.0 {
+        return None;
+    }
+    let mut joint_angles = BTreeMap::new();
+    let mut joint_velocities_deg_per_sec = BTreeMap::new();
+    let mut joint_accelerations_deg_per_sec2 = BTreeMap::new();
+    for joint in &challenge.robot_config.joints {
+        let start_angle = start.joint_angles.get(&joint.id).copied()?;
+        let via_angle = via.joint_angles.get(&joint.id).copied()?;
+        let end_angle = end.joint_angles.get(&joint.id).copied()?;
+        let toward_via = (via_angle - start_angle) / first_seconds;
+        let away_from_via = (end_angle - via_angle) / second_seconds;
+        let velocity = if toward_via * away_from_via > 0.0 {
+            2.0 * toward_via * away_from_via / (toward_via + away_from_via)
+        } else {
+            0.0
+        };
+        joint_angles.insert(joint.id.clone(), via_angle);
+        joint_velocities_deg_per_sec.insert(joint.id.clone(), velocity);
+        joint_accelerations_deg_per_sec2.insert(joint.id.clone(), 0.0);
+    }
+    Some(hcr_contract::CutterTrajectoryBoundaryStateV4 {
+        joint_angles,
+        joint_velocities_deg_per_sec,
+        joint_accelerations_deg_per_sec2,
+    })
+}
+
+fn required_duration_scale_v4(dynamics: &CutterGridPtpDynamicsV4) -> f64 {
+    1.05_f64
+        .max(dynamics.maximum_velocity_ratio * 1.01)
+        .max(libm::sqrt(dynamics.maximum_acceleration_ratio) * 1.01)
+        .max(libm::cbrt(dynamics.maximum_jerk_ratio) * 1.01)
+}
+
+fn round_duration_ms_v4(value: f64) -> f64 {
+    libm::ceil(value.max(CUTTER_GRID_V4_MIN_PTP_DURATION_MS))
+}
+
+#[derive(Debug, Clone)]
+struct DynamicMetricsV4 {
+    maximum_velocity_ratio: f64,
+    maximum_acceleration_ratio: f64,
+    maximum_jerk_ratio: f64,
+    adaptive_validation_sample_count: u32,
+    maximum_normalized_joint_step: f64,
+    maximum_end_effector_chord_deviation: f64,
+    minimum_head_clearance: f64,
+    minimum_joint_limit_margin: f64,
+}
+
+impl Default for DynamicMetricsV4 {
+    fn default() -> Self {
+        Self {
+            maximum_velocity_ratio: 0.0,
+            maximum_acceleration_ratio: 0.0,
+            maximum_jerk_ratio: 0.0,
+            adaptive_validation_sample_count: 0,
+            maximum_normalized_joint_step: 0.0,
+            maximum_end_effector_chord_deviation: 0.0,
+            minimum_head_clearance: f64::INFINITY,
+            minimum_joint_limit_margin: f64::INFINITY,
+        }
+    }
+}
+
+fn merge_dynamic_metrics_v4(metrics: &mut DynamicMetricsV4, item: &RetimedPtpV4) {
+    metrics.maximum_velocity_ratio = metrics
+        .maximum_velocity_ratio
+        .max(item.dynamics.maximum_velocity_ratio);
+    metrics.maximum_acceleration_ratio = metrics
+        .maximum_acceleration_ratio
+        .max(item.dynamics.maximum_acceleration_ratio);
+    metrics.maximum_jerk_ratio = metrics
+        .maximum_jerk_ratio
+        .max(item.dynamics.maximum_jerk_ratio);
+    metrics.adaptive_validation_sample_count = metrics
+        .adaptive_validation_sample_count
+        .saturating_add(item.certificate.samples.len() as u32);
+    metrics.maximum_normalized_joint_step = metrics
+        .maximum_normalized_joint_step
+        .max(item.certificate.maximum_normalized_joint_step);
+    metrics.maximum_end_effector_chord_deviation = metrics
+        .maximum_end_effector_chord_deviation
+        .max(item.maximum_end_effector_chord_deviation);
+    metrics.minimum_head_clearance = finite_min_v4(
+        metrics.minimum_head_clearance,
+        item.certificate.minimum_head_clearance,
+    );
+    metrics.minimum_joint_limit_margin = finite_min_v4(
+        metrics.minimum_joint_limit_margin,
+        item.certificate.minimum_joint_limit_margin,
+    );
+}
+
+fn finite_min_v4(left: f64, right: f64) -> f64 {
+    if left.is_finite() {
+        left.min(right)
+    } else {
+        right
+    }
+}
+
+fn ptp_chord_deviation_v4(
+    challenge: &ChallengeDefinition,
+    primitive: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+) -> Option<f64> {
+    let start = evaluate_cutter_grid_sync_ptp_v4(challenge, primitive, 0.0)?.end_effector;
+    let end =
+        evaluate_cutter_grid_sync_ptp_v4(challenge, primitive, primitive.duration_ms)?.end_effector;
+    let mut maximum = 0.0_f64;
+    for progress in [0.25_f64, 0.5, 0.75] {
+        let actual = evaluate_cutter_grid_sync_ptp_v4(
+            challenge,
+            primitive,
+            primitive.duration_ms * progress,
+        )?
+        .end_effector;
+        maximum = maximum.max(point_segment_distance_v4(actual, start, end));
+    }
+    Some(maximum)
+}
+
+fn point_segment_distance_v4(point: Vec3, start: Vec3, end: Vec3) -> f64 {
+    let direction = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    let length_squared = direction
+        .iter()
+        .map(|component| component * component)
+        .sum::<f64>();
+    let progress = if length_squared == 0.0 {
+        0.0
+    } else {
+        clamp(
+            ((point[0] - start[0]) * direction[0]
+                + (point[1] - start[1]) * direction[1]
+                + (point[2] - start[2]) * direction[2])
+                / length_squared,
+            0.0,
+            1.0,
+        )
+    };
+    distance(
+        point,
+        [
+            start[0] + direction[0] * progress,
+            start[1] + direction[1] * progress,
+            start[2] + direction[2] * progress,
+        ],
+    )
+}
+
+#[derive(Debug, Clone)]
+struct CutterGridSweepV4 {
+    cut_voxels: VoxelSet,
+    contact_events: Vec<hcr_contract::CutterGridContactEventV4>,
+}
+
+fn collect_actual_sweep_v4(
+    challenge: &ChallengeDefinition,
+    primitives: &[RetimedPtpV4],
+    remaining_hair: &VoxelSet,
+) -> CutterGridSweepV4 {
+    let mut cut_voxels = VoxelSet::new();
+    let mut events = BTreeMap::<i64, VoxelSet>::new();
+    let mut elapsed_ms = 0.0_f64;
+    for item in primitives {
+        for pair in item.certificate.samples.windows(2) {
+            for hit in find_swept_voxel_hits(
+                pair[0].end_effector,
+                pair[1].end_effector,
+                remaining_hair,
+                &challenge.voxel_config,
+                challenge.robot_config.geometry.tool_radius,
+            ) {
+                if !cut_voxels.insert(hit) {
+                    continue;
+                }
+                let time_key = ((elapsed_ms + pair[1].time_ms) * 1_000.0).round() as i64;
+                events.entry(time_key).or_default().insert(hit);
+            }
+        }
+        elapsed_ms += item.primitive.duration_ms;
+    }
+    CutterGridSweepV4 {
+        cut_voxels,
+        contact_events: events
+            .into_iter()
+            .map(
+                |(time_key, voxels)| hcr_contract::CutterGridContactEventV4 {
+                    time_ms: time_key as f64 / 1_000.0,
+                    voxel_keys: sorted_voxel_keys_v4(&voxels),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn assert_zero_hair_contact_v4(
+    challenge: &ChallengeDefinition,
+    samples: &[CutterGridPtpSampleV4],
+) -> Result<(), hcr_contract::CutterGridPlanningErrorCodeV4> {
+    let hair = challenge
+        .initial_hair
+        .voxels
+        .iter()
+        .copied()
+        .collect::<VoxelSet>();
+    if samples.windows(2).any(|pair| {
+        !find_swept_voxel_hits(
+            pair[0].end_effector,
+            pair[1].end_effector,
+            &hair,
+            &challenge.voxel_config,
+            challenge.robot_config.geometry.tool_radius,
+        )
+        .is_empty()
+    }) {
+        Err(hcr_contract::CutterGridPlanningErrorCodeV4::ActualSweepCertificationFailed)
+    } else {
+        Ok(())
+    }
+}
+
+fn sorted_voxel_keys_v4(voxels: &VoxelSet) -> Vec<String> {
+    let mut keys = voxels.iter().map(coord_to_key).collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+fn stable_fnv_signature_v4(value: &impl Serialize) -> Result<String, serde_json::Error> {
+    serde_json::to_string(value).map(|document| hcr_contract::fnv1a64(&document))
+}
+
+fn stable_plan_signature_v4(
+    plan: &hcr_contract::CutterTrajectoryPlanV4,
+) -> Result<String, serde_json::Error> {
+    let mut unsigned = plan.clone();
+    // Rust's V4 integrity signature is intentionally implementation-local.
+    // Emptying the self field gives a stable canonical preimage without claiming
+    // byte-for-byte JSON compatibility with the TypeScript Worker.
+    unsigned.trajectory_signature.clear();
+    stable_fnv_signature_v4(&unsigned)
+}
+
+fn system_failure_v4(
+    code: hcr_contract::CutterGridPlanningErrorCodeV4,
+    stage: hcr_contract::CutterGridPlanningStageV4,
+) -> CutterGridPlanningFailureV4 {
+    CutterGridPlanningFailureV4 {
+        code,
+        stage,
+        source_block_id: Some("system-positioning".into()),
+        action_index: None,
+        expanded_action_index: None,
+        target_coord: Some([0, 0, 0]),
+    }
+}
+
+fn action_failure_v4(
+    code: hcr_contract::CutterGridPlanningErrorCodeV4,
+    stage: hcr_contract::CutterGridPlanningStageV4,
+    action_index: usize,
+    action: &CutterGridExecutableActionV4,
+) -> CutterGridPlanningFailureV4 {
+    CutterGridPlanningFailureV4::for_action(
+        code,
+        stage,
+        action_index,
+        action,
+        Some(move_end_coord(action)),
+    )
+}
+
+fn serialization_failure_v4(
+    action_index: usize,
+    action: &CutterGridExecutableActionV4,
+) -> CutterGridPlanningFailureV4 {
+    action_failure_v4(
+        hcr_contract::CutterGridPlanningErrorCodeV4::PlanSignatureMismatch,
+        hcr_contract::CutterGridPlanningStageV4::Serialization,
+        action_index,
+        action,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2145,5 +3382,43 @@ mod tests {
         assert_eq!(start.joint_angles, angles);
         assert_eq!(end.joint_angles, angles);
         assert!(certify_cutter_grid_sync_ptp_geometry_v4(&challenge, &primitive).is_some());
+    }
+
+    #[test]
+    fn quintic_boundary_evaluator_preserves_explicit_endpoint_derivatives() {
+        let challenge = shipped_challenge();
+        let start_angles = initial_angles(&challenge.robot_config.joints);
+        let mut end_angles = start_angles.clone();
+        let joint = &challenge.robot_config.joints[0];
+        end_angles.insert(
+            joint.id.clone(),
+            (start_angles[&joint.id] + 1.0).min(joint.max_angle_deg - 0.001),
+        );
+        let zero = challenge
+            .robot_config
+            .joints
+            .iter()
+            .map(|joint| (joint.id.clone(), 0.0))
+            .collect::<BTreeMap<_, _>>();
+        let mut end_velocity = zero.clone();
+        end_velocity.insert(joint.id.clone(), 2.0);
+        let start = hcr_contract::CutterTrajectoryBoundaryStateV4 {
+            joint_angles: start_angles.clone(),
+            joint_velocities_deg_per_sec: zero.clone(),
+            joint_accelerations_deg_per_sec2: zero.clone(),
+        };
+        let end = hcr_contract::CutterTrajectoryBoundaryStateV4 {
+            joint_angles: end_angles.clone(),
+            joint_velocities_deg_per_sec: end_velocity.clone(),
+            joint_accelerations_deg_per_sec2: zero,
+        };
+        let primitive =
+            create_cutter_grid_sync_ptp_with_boundary_states_v4(&challenge, &start, &end, 500.0)
+                .expect("complete finite boundary is accepted");
+        let closing = evaluate_cutter_grid_sync_ptp_v4(&challenge, &primitive, 500.0)
+            .expect("closing endpoint evaluates");
+
+        assert_eq!(closing.joint_angles, end_angles);
+        assert_eq!(closing.joint_velocities_deg_per_sec, end_velocity);
     }
 }

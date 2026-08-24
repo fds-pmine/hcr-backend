@@ -10,6 +10,9 @@ rust-version.workspace = true
 hcr_contract = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
+# The compact V4 planner signs only its own deterministic serialized plan.
+# It stays optional so firmware/no_std replay builds do not link planner code.
+serde_json = { workspace = true, optional = true }
 # Used in std builds too, so server and firmware share one trig implementation.
 libm = "0.2"
 
@@ -21,7 +24,7 @@ default = ["std"]
 std = ["hcr_contract/std", "serde/std", "sha2/std"]
 # The compact Cutter Grid planner is server-only. Firmware/no_std builds retain
 # replay and safety checks but never link the IK/search implementation.
-planner = ["std"]
+planner = ["std", "dep:serde_json"]
 
 [lints.rust]
 missing_docs = "warn"
