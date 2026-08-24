@@ -9,19 +9,18 @@
 use std::collections::BTreeSet;
 
 use hcr_contract::{
-    ChallengeDefinition, CutterGridDirection, CutterGridNode, CutterGridProgramV4,
-    CutterGridProfileV4, CutterGridTrajectoryActionV4, ProgramMetrics,
-    CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION,
+    CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION, ChallengeDefinition, CutterGridDirection,
+    CutterGridNode, CutterGridProfileV4, CutterGridProgramV4, CutterGridTrajectoryActionV4,
+    ProgramMetrics,
 };
 use hcr_sim::{
-    calculate_score, compile_cutter_grid_program_v4, coord_to_key, key_to_coord, plan_cutter_grid_v4,
-    VoxelSet,
+    VoxelSet, calculate_score, compile_cutter_grid_program_v4, coord_to_key, key_to_coord,
+    plan_cutter_grid_v4,
 };
 use serde::Deserialize;
 
-const PROFILE_JSON: &str = include_str!(
-    "../../../../HCR_Simulator_Frontend/tests/fixtures/cutter-grid-profile-v4.json"
-);
+const PROFILE_JSON: &str =
+    include_str!("../../../../HCR_Simulator_Frontend/tests/fixtures/cutter-grid-profile-v4.json");
 const COMPACT_SUMMARY_JSON: &str = include_str!(
     "../../../../HCR_Simulator_Frontend/tests/fixtures/cutter-grid-compact-ptp-v4.json"
 );
@@ -59,13 +58,11 @@ fn profile() -> CutterGridProfileV4 {
 }
 
 fn compact_summary() -> CompactSummary {
-    serde_json::from_str(COMPACT_SUMMARY_JSON)
-        .expect("frontend compact PTP summary fixture parses")
+    serde_json::from_str(COMPACT_SUMMARY_JSON).expect("frontend compact PTP summary fixture parses")
 }
 
 fn voxel_set(keys: impl IntoIterator<Item = String>) -> VoxelSet {
-    keys
-        .into_iter()
+    keys.into_iter()
         .map(|key| key_to_coord(&key).expect("fixture voxel key is valid"))
         .collect()
 }
@@ -104,7 +101,10 @@ fn rust_reference_plan_matches_the_frontend_v4_compact_summary() {
     assert_eq!(first.trajectory_signature, second.trajectory_signature);
     assert_eq!(first.planner_version, expected.planner_version);
     assert_eq!(first.positioning.entry_option_id, expected.entry_option_id);
-    assert_eq!(first.executed_command_count, expected.executed_command_count);
+    assert_eq!(
+        first.executed_command_count,
+        expected.executed_command_count
+    );
     assert_close(
         first.estimated_duration_ms,
         expected.estimated_duration_ms,
@@ -121,7 +121,10 @@ fn rust_reference_plan_matches_the_frontend_v4_compact_summary() {
         .collect();
     assert_eq!(primitive_counts, expected.move_primitive_counts);
     assert!(primitive_counts.iter().all(|count| (1..=2).contains(count)));
-    assert_eq!(first.expected_result_voxels.len(), expected.result_voxel_count);
+    assert_eq!(
+        first.expected_result_voxels.len(),
+        expected.result_voxel_count
+    );
     assert_eq!(
         sorted_cut_voxels(&challenge, &voxel_set(first.expected_result_voxels.clone())),
         expected.cut_voxels
@@ -204,7 +207,11 @@ fn global_ik_regression_uses_a_safe_low_wrist_branch_and_real_sweep() {
         })
         .collect();
     assert_eq!(moves.len(), 3);
-    assert!(moves.iter().all(|primitives| (1..=2).contains(&primitives.len())));
+    assert!(
+        moves
+            .iter()
+            .all(|primitives| (1..=2).contains(&primitives.len()))
+    );
     let wrist = moves
         .last()
         .and_then(|primitives| primitives.last())
@@ -214,7 +221,9 @@ fn global_ik_regression_uses_a_safe_low_wrist_branch_and_real_sweep() {
     assert!(wrist < 100.0, "expected low Wrist branch, got {wrist}");
 
     let remaining = voxel_set(plan.expected_result_voxels);
-    let actual_cuts: BTreeSet<String> = sorted_cut_voxels(&challenge, &remaining).into_iter().collect();
+    let actual_cuts: BTreeSet<String> = sorted_cut_voxels(&challenge, &remaining)
+        .into_iter()
+        .collect();
     let expected_cuts: BTreeSet<String> = ["-2,0,4", "-2,1,4", "-1,0,4", "-1,1,4", "-1,2,4"]
         .into_iter()
         .map(String::from)
