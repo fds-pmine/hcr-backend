@@ -35,7 +35,16 @@ pub mod scoring;
 pub mod state;
 pub mod voxel;
 
-pub use collision::{HeadCollision, RobotCollisionPart, find_robot_head_collision};
+/// Server-only compact Cutter Grid V4 compiler and endpoint IK primitives.
+///
+/// The feature intentionally implies `std`; firmware/no_std builds must not
+/// acquire a general-purpose planner simply because they share simulation code.
+#[cfg(feature = "planner")]
+pub mod cutter_grid_v4;
+
+pub use collision::{
+    HeadCollision, RobotCollisionPart, find_robot_head_collision, measure_robot_head_clearance,
+};
 pub use controller::{
     BlockedHeadCollision, COLLISION_BISECTION_STEPS, MAX_ANGULAR_STEP_DEG, MoveAdvanceResult,
     RobotController,
@@ -54,4 +63,13 @@ pub use state::JointAngles;
 pub use voxel::{
     VoxelSet, calculate_trim_score, coord_to_key, find_swept_voxel_hits, key_to_coord,
     result_voxels_hash, segment_intersects_aabb, voxel_coord_to_world,
+};
+
+#[cfg(feature = "planner")]
+pub use cutter_grid_v4::{
+    compile_cutter_grid_program_v4, cutter_grid_coord_to_world_v4,
+    enumerate_cutter_grid_ik_candidates_v4, minimum_normalized_joint_limit_margin_v4,
+    normalized_joint_distance_v4, CutterGridCompileErrorV4, CutterGridCompileErrorV4Code,
+    CutterGridExecutableActionV4, CutterGridIkCandidateV4, CutterGridIkEntrySeedV4,
+    CutterGridIkOptionsV4, CutterGridV4CompiledProgram,
 };

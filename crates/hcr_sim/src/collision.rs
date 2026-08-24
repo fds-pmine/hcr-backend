@@ -128,6 +128,76 @@ pub fn find_robot_head_collision(
         .map(|(part, _, _, _)| HeadCollision { part })
 }
 
+/// Conservative signed clearance from the arm to the expanded head ellipsoid.
+///
+/// Positive values are safe, zero means contact, and negative values overlap
+/// the exact `head_clearance` constraint used by [`find_robot_head_collision`].
+/// The V4 planner uses this only to rank already-safe candidates; it never
+/// substitutes the metric for the boolean collision proof.
+pub fn measure_robot_head_clearance(
+    pose: &RobotPose,
+    voxel_config: &VoxelConfig,
+    geometry: &RobotGeometryConfig,
+) -> f64 {
+    let collision = &geometry.collision;
+    let primitives: [(Vec3, Vec3, f64); 8] = [
+        (pose.base, pose.shoulder, collision.joint_radius),
+        (pose.shoulder, pose.shoulder, collision.joint_radius),
+        (pose.shoulder, pose.elbow, collision.link_radius),
+        (pose.elbow, pose.elbow, collision.joint_radius),
+        (pose.elbow, pose.wrist, collision.link_radius),
+        (pose.wrist, pose.wrist, collision.joint_radius),
+        (pose.tool_base, pose.end_effector, collision.tool_shaft_radius),
+        (pose.end_effector, pose.end_effector, geometry.tool_radius),
+    ];
+
+    primitives
+        .into_iter()
+        .map(|(start, end, radius)| {
+            minimum_ellipsoid_expansion_for_segment(
+                start,
+                end,
+                voxel_config.head_center,
+                voxel_config.head_scale,
+            ) - (radius + collision.head_clearance)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// Smallest uniform ellipsoid expansion at which a segment reaches the head.
+///
+/// This is a fixed-iteration bisection port of the frontend clearance metric;
+/// bounded iteration makes the value deterministic and avoids a tolerance that
+/// depends on execution speed.
+fn minimum_ellipsoid_expansion_for_segment(
+    start: Vec3,
+    end: Vec3,
+    center: Vec3,
+    scale: Vec3,
+) -> f64 {
+    if segment_intersects_expanded_ellipsoid(start, end, center, scale, 0.0) {
+        return 0.0;
+    }
+
+    let mut low = 0.0_f64;
+    let mut high = scale[0].max(scale[1]).max(scale[2]).max(1.0);
+    while !segment_intersects_expanded_ellipsoid(start, end, center, scale, high) {
+        high *= 2.0;
+        if high > 1024.0 {
+            return high;
+        }
+    }
+    for _ in 0..40 {
+        let middle = (low + high) / 2.0;
+        if segment_intersects_expanded_ellipsoid(start, end, center, scale, middle) {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    high
+}
+
 /// Whether a capsule of radius `expansion` around segment `start..end` overlaps
 /// the head ellipsoid.
 ///

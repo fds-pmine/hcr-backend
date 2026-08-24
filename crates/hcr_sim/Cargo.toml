@@ -19,6 +19,9 @@ serde_json = { version = "1", features = ["std"] }
 [features]
 default = ["std"]
 std = ["hcr_contract/std", "serde/std", "sha2/std"]
+# The compact Cutter Grid planner is server-only. Firmware/no_std builds retain
+# replay and safety checks but never link the IK/search implementation.
+planner = ["std"]
 
 [lints.rust]
 missing_docs = "warn"

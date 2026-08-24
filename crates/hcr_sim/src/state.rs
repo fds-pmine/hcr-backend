@@ -26,6 +26,15 @@ impl JointAngles {
         }
     }
 
+    /// Build an angle state from an already ordered mapping.
+    ///
+    /// The V4 planner owns joint values in a [`BTreeMap`] so candidate
+    /// ordering and serialization are deterministic; forward kinematics keeps
+    /// using this wrapper as its single angle-input type.
+    pub fn from_ordered(angles: BTreeMap<String, f64>) -> Self {
+        Self { angles }
+    }
+
     /// Current angle of `joint_id`, if defined.
     pub fn get(&self, joint_id: &str) -> Option<f64> {
         self.angles.get(joint_id).copied()
