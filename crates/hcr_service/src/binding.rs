@@ -20,7 +20,8 @@ use std::sync::Arc;
 
 use hcr_contract::api::ScoreInput;
 use hcr_contract::{
-    HcrErrorCode, MatchConfig, SessionRespond, SessionStart, SubmissionCreate,
+    CutterGridPlanRequestV1, HcrErrorCode, MatchConfig, SessionRespond, SessionStart,
+    SubmissionCreate,
 };
 use serde::Serialize;
 
@@ -35,6 +36,10 @@ pub enum Method {
     /// Everything else.
     Post,
 }
+
+/// Maximum accepted compact-program request size. A V4 program carries source
+/// blocks only; dense plans and Profiles are never client input.
+pub const CUTTER_GRID_PLAN_REQUEST_MAX_BYTES: usize = 64 * 1024;
 
 /// An inbound request, already stripped of transport concerns.
 #[derive(Debug, Clone)]
@@ -107,6 +112,8 @@ pub struct HttpReply {
     pub status: u16,
     /// JSON body.
     pub body: Vec<u8>,
+    /// Explicit transport headers for the small number of protocol-level hints.
+    pub headers: Vec<(String, String)>,
 }
 
 impl HttpReply {
@@ -122,7 +129,11 @@ impl HttpReply {
 
     fn ok(value: &impl Serialize) -> Self {
         match serde_json::to_vec(value) {
-            Ok(body) => Self { status: 200, body },
+            Ok(body) => Self {
+                status: 200,
+                body,
+                headers: Vec::new(),
+            },
             Err(_) => Self::from_error(&ServiceError::Internal("failed to encode response")),
         }
     }
@@ -131,7 +142,16 @@ impl HttpReply {
         let status = status_for(error.code());
         let body = serde_json::to_vec(&serde_json::json!({ "error": error.to_wire() }))
             .unwrap_or_else(|_| b"{\"error\":{\"code\":\"INTERNAL\"}}".to_vec());
-        Self { status, body }
+        let headers = if matches!(error, ServiceError::RateLimited) {
+            vec![("Retry-After".into(), "1".into())]
+        } else {
+            Vec::new()
+        };
+        Self {
+            status,
+            body,
+            headers,
+        }
     }
 }
 
@@ -215,6 +235,20 @@ impl Router {
                 Ok(HttpReply::ok(&service.score(&input)?))
             }
 
+            // -- server-side compact Cutter Grid planning, Practice only --
+            (Method::Post, ["cutter-grid", "plans"]) => {
+                if call.body.len() > CUTTER_GRID_PLAN_REQUEST_MAX_BYTES {
+                    return Err(ServiceError::ProgramInvalid {
+                        message: format!(
+                            "Cutter Grid plan requests must not exceed {CUTTER_GRID_PLAN_REQUEST_MAX_BYTES} bytes."
+                        ),
+                        field: None,
+                    });
+                }
+                let request: CutterGridPlanRequestV1 = decode(&call.body)?;
+                Ok(HttpReply::ok(&service.plan_cutter_grid(request).await?))
+            }
+
             // -- submissions --
             (Method::Post, ["submissions"]) => {
                 let request: SubmissionCreate = decode(&call.body)?;
@@ -270,7 +304,11 @@ impl Router {
                     "join requires an authenticated player",
                 ))?;
                 let display_name = call.display_name.as_deref().unwrap_or(player);
-                Ok(HttpReply::ok(&service.join_match(id, player, display_name)?))
+                Ok(HttpReply::ok(&service.join_match(
+                    id,
+                    player,
+                    display_name,
+                )?))
             }
             (Method::Post, ["matches", id, "start"]) => {
                 Ok(HttpReply::ok(&service.start_match(id)?))

@@ -2,30 +2,30 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use hcr_contract::ScoreResult;
+use hcr_contract::api::{ReplayInfo, ScoreInput};
 use hcr_contract::{
     ChallengeDefinitionDto, ChallengeSummary, NextItem, ResponseOutcome, SessionRespond,
     SessionResultDto, SessionSnapshot, SessionStart, SubmissionCreate, SubmissionResult,
     SubmissionStatus, TerminalReason,
 };
-use hcr_contract::api::{ReplayInfo, ScoreInput};
-use hcr_contract::ScoreResult;
-use hcr_sim::{VoxelSet, calculate_score, key_to_coord};
+use hcr_contract::{CutterGridPlanRequestV1, CutterGridPlanResponseV1, CutterGridProfileV4};
 use hcr_contract::{
     MatchChallengeRef, MatchConfig, MatchResults, MatchState, MatchSubmissionAck, TimeSync,
 };
-use hcr_qbank::{
-    Blueprint, ExposureController, HcrDynamicBank, OutcomeStore, SessionConfig,
-};
+use hcr_qbank::{Blueprint, ExposureController, HcrDynamicBank, OutcomeStore, SessionConfig};
+use hcr_sim::{VoxelSet, calculate_score, key_to_coord};
 
 use crate::catalog::CatalogStore;
 use crate::clock::{SharedClock, system_clock};
-use crate::rounds::MatchRegistry;
+use crate::cutter_grid_planner::{CutterGridPlannerPool, CutterGridProfileRegistry};
 use crate::error::{ServiceError, ServiceResult};
 use crate::itemref::ItemRefSigner;
 use crate::replay::{ENGINE_VERSION, ReplayPool, diverged};
+use crate::rounds::MatchRegistry;
 use crate::session::{SessionRegistry, SessionSpec};
 
 /// Service-wide configuration.
@@ -80,6 +80,7 @@ impl Default for ServiceConfig {
 pub struct HcrService {
     catalog: Arc<CatalogStore>,
     replay: Arc<ReplayPool>,
+    cutter_grid_planner: Arc<CutterGridPlannerPool>,
     sessions: SessionRegistry,
     signer: ItemRefSigner,
     /// Submission id -> result. The idempotency record.
@@ -113,9 +114,13 @@ impl HcrService {
         config: ServiceConfig,
         clock: SharedClock,
     ) -> Self {
+        let cutter_grid_profiles = Arc::new(CutterGridProfileRegistry::with_bundled_profiles());
         Self {
             catalog,
             replay,
+            cutter_grid_planner: Arc::new(CutterGridPlannerPool::with_default_concurrency(
+                cutter_grid_profiles,
+            )),
             sessions: SessionRegistry::new(),
             signer,
             submissions: Mutex::new(HashMap::new()),
@@ -151,6 +156,24 @@ impl HcrService {
     /// The replay pool.
     pub fn replay_pool(&self) -> &Arc<ReplayPool> {
         &self.replay
+    }
+
+    /// V4 server-side compact planning pool. It is separate from replay and
+    /// never participates in scoring, Sessions, Matches, or ArmDock.
+    pub fn cutter_grid_planner_pool(&self) -> &Arc<CutterGridPlannerPool> {
+        &self.cutter_grid_planner
+    }
+
+    /// Register an immutable server-owned V4 Profile during bootstrap.
+    pub fn register_cutter_grid_profile(
+        &self,
+        challenge_id: impl Into<String>,
+        challenge_version: u32,
+        profile: CutterGridProfileV4,
+    ) -> ServiceResult<()> {
+        self.cutter_grid_planner
+            .profiles()
+            .register(challenge_id, challenge_version, profile)
     }
 
     // -- catalog ---------------------------------------------------------
@@ -197,6 +220,25 @@ impl HcrService {
             &input.program_metrics,
             &input.scoring,
         )?)
+    }
+
+    /// Produce a server-authoritative V4 Cutter Grid plan for Practice only.
+    ///
+    /// This endpoint does not submit, score, write a Session response, join a
+    /// Match, or make any physical-arm request. Those remain explicitly
+    /// Servo/V2-only until separately authorized.
+    pub async fn plan_cutter_grid(
+        &self,
+        request: CutterGridPlanRequestV1,
+    ) -> ServiceResult<CutterGridPlanResponseV1> {
+        let challenge = self
+            .catalog
+            .get(&request.challenge_id, Some(request.challenge_version))?;
+        Ok(self
+            .cutter_grid_planner
+            .plan(&challenge, &request.program)
+            .await?
+            .response)
     }
 
     // -- submissions -----------------------------------------------------
@@ -305,11 +347,7 @@ impl HcrService {
     }
 
     fn stored_submission(&self, submission_id: &str) -> Option<SubmissionResult> {
-        self.submissions
-            .lock()
-            .ok()?
-            .get(submission_id)
-            .cloned()
+        self.submissions.lock().ok()?.get(submission_id).cloned()
     }
 
     fn store_submission(&self, result: &SubmissionResult) {
@@ -346,7 +384,10 @@ impl HcrService {
         }
 
         let ordinal = self.counter.fetch_add(1, Ordering::Relaxed);
-        let session_id = format!("s-{:016x}", self.config.seed ^ (ordinal.wrapping_mul(0x9E37_79B9_7F4A_7C15)));
+        let session_id = format!(
+            "s-{:016x}",
+            self.config.seed ^ (ordinal.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        );
         let seed = self.config.seed.wrapping_add(ordinal);
 
         let outcomes = OutcomeStore::new();
@@ -376,12 +417,20 @@ impl HcrService {
 
     /// Current state of a session.
     pub async fn session_snapshot(&self, session_id: &str) -> ServiceResult<SessionSnapshot> {
-        self.sessions.get(session_id, self.now()).await?.snapshot().await
+        self.sessions
+            .get(session_id, self.now())
+            .await?
+            .snapshot()
+            .await
     }
 
     /// Serve the next item.
     pub async fn next_item(&self, session_id: &str) -> ServiceResult<NextItem> {
-        self.sessions.get(session_id, self.now()).await?.next_item().await
+        self.sessions
+            .get(session_id, self.now())
+            .await?
+            .next_item()
+            .await
     }
 
     /// Report a scored submission against the item currently awaiting a response.
@@ -395,11 +444,11 @@ impl HcrService {
             return Err(ServiceError::ItemRefInvalid("issued to another session"));
         }
 
-        let submission = self
-            .stored_submission(&request.submission_id)
-            .ok_or(ServiceError::ItemRefInvalid(
-                "the referenced submission has not been scored",
-            ))?;
+        let submission =
+            self.stored_submission(&request.submission_id)
+                .ok_or(ServiceError::ItemRefInvalid(
+                    "the referenced submission has not been scored",
+                ))?;
 
         // Guard against answering item A with a program written for item B.
         if submission.challenge_id != claims.item_id
@@ -601,10 +650,7 @@ impl HcrService {
                 .iter()
                 .filter(|row| row.submission_id.is_some())
                 .count(),
-            top_completion: results
-                .rows
-                .first()
-                .map_or(0.0, |row| row.completion_score),
+            top_completion: results.rows.first().map_or(0.0, |row| row.completion_score),
         });
         Ok(results)
     }

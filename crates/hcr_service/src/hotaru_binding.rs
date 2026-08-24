@@ -53,8 +53,12 @@ use crate::binding::{HttpCall, Method, Router};
 pub const ROUTES: &[(&str, &str)] = &[
     ("/api/v1/challenges", "hcr.challenges.list"),
     ("/api/v1/challenges/<id>", "hcr.challenges.get"),
-    ("/api/v1/challenges/<id>/<version>", "hcr.challenges.version"),
+    (
+        "/api/v1/challenges/<id>/<version>",
+        "hcr.challenges.version",
+    ),
     ("/api/v1/score", "hcr.score"),
+    ("/api/v1/cutter-grid/plans", "hcr.cutter-grid.plan"),
     ("/api/v1/submissions", "hcr.submissions.create"),
     ("/api/v1/submissions/<id>", "hcr.submissions.get"),
     ("/api/v1/sessions", "hcr.sessions.start"),
@@ -147,11 +151,12 @@ where
         })
         .await;
 
-    with_cors(
+    let response = reply.headers.iter().fold(
         response_templates::normal_response(StatusCode::from(reply.status), reply.body)
             .content_type(HttpContentType::ApplicationJson()),
-        cors_allow_origin,
-    )
+        |response, (name, value)| response.add_header(name, value),
+    );
+    with_cors(response, cors_allow_origin)
 }
 
 /// Pick the allowed origin to echo, if the caller's origin is one of them.
@@ -166,7 +171,10 @@ where
 /// has to name the caller, and a list is not a legal value. Sending a configured
 /// origin to a caller that did not claim it, as this did before, told browsers
 /// nothing and non-browser clients something untrue.
-fn matching_origin<'a>(configured: Option<&'a str>, request_origin: Option<&str>) -> Option<&'a str> {
+fn matching_origin<'a>(
+    configured: Option<&'a str>,
+    request_origin: Option<&str>,
+) -> Option<&'a str> {
     let (configured, request_origin) = (configured?, request_origin?);
     configured
         .split(',')
@@ -255,14 +263,20 @@ mod tests {
             matching_origin(allowed, Some("https://web.hcr.rs")),
             Some("https://web.hcr.rs")
         );
-        assert_eq!(matching_origin(allowed, Some("hcr://app")), Some("hcr://app"));
+        assert_eq!(
+            matching_origin(allowed, Some("hcr://app")),
+            Some("hcr://app")
+        );
         assert_eq!(matching_origin(allowed, Some("https://evil.test")), None);
     }
 
     #[test]
     fn tolerates_spacing_in_the_configured_list() {
         let allowed = Some(" https://web.hcr.rs , hcr://app ,, ");
-        assert_eq!(matching_origin(allowed, Some("hcr://app")), Some("hcr://app"));
+        assert_eq!(
+            matching_origin(allowed, Some("hcr://app")),
+            Some("hcr://app")
+        );
         // An empty entry must never match an empty or absent origin.
         assert_eq!(matching_origin(allowed, Some("")), None);
     }
@@ -281,7 +295,10 @@ mod tests {
         // `https://web.hcr.rs.evil.test` must not pass because the allowed value
         // is a prefix of it.
         assert_eq!(
-            matching_origin(Some("https://web.hcr.rs"), Some("https://web.hcr.rs.evil.test")),
+            matching_origin(
+                Some("https://web.hcr.rs"),
+                Some("https://web.hcr.rs.evil.test")
+            ),
             None
         );
     }

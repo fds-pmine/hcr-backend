@@ -53,7 +53,9 @@ async fn listing_challenges_returns_the_v1_summary_shape() {
 async fn a_challenge_can_be_fetched_by_id_and_by_version() {
     let router = router();
 
-    let latest = router.dispatch(HttpCall::get("/api/v1/challenges/hard")).await;
+    let latest = router
+        .dispatch(HttpCall::get("/api/v1/challenges/hard"))
+        .await;
     assert_eq!(latest.status, 200);
     assert!(latest.text().contains("\"version\":2"));
 
@@ -80,7 +82,10 @@ async fn unknown_challenges_and_routes_are_404() {
         404
     );
     assert_eq!(
-        router.dispatch(HttpCall::get("/api/v1/nonsense")).await.status,
+        router
+            .dispatch(HttpCall::get("/api/v1/nonsense"))
+            .await
+            .status,
         404
     );
     assert_eq!(router.dispatch(HttpCall::get("/")).await.status, 404);
@@ -169,7 +174,9 @@ async fn a_submission_round_trips_through_the_router() {
     let result: SubmissionResult = reply.json().expect("result");
     assert_eq!(result.status, SubmissionStatus::Completed);
 
-    let fetched = router.dispatch(HttpCall::get("/api/v1/submissions/sub-1")).await;
+    let fetched = router
+        .dispatch(HttpCall::get("/api/v1/submissions/sub-1"))
+        .await;
     assert_eq!(fetched.status, 200);
 }
 
@@ -217,11 +224,63 @@ fn compact_ptp_planning_failure_preserves_block_and_coordinate_context() {
     assert_eq!(wire.code, HcrErrorCode::TrajectoryPlanningFailed);
     assert_eq!(wire.field.as_deref(), Some("forward-3"));
     let details = wire.details.expect("planning diagnostics");
-    assert_eq!(details.get("plannerCode").map(String::as_str), Some("endpoint-ptp-disconnected"));
+    assert_eq!(
+        details.get("plannerCode").map(String::as_str),
+        Some("endpoint-ptp-disconnected")
+    );
     assert_eq!(details.get("stage").map(String::as_str), Some("ptp-edge"));
     assert_eq!(details.get("actionIndex").map(String::as_str), Some("2"));
-    assert_eq!(details.get("expandedActionIndex").map(String::as_str), Some("2"));
-    assert_eq!(details.get("targetCoord").map(String::as_str), Some("-2,6,-3"));
+    assert_eq!(
+        details.get("expandedActionIndex").map(String::as_str),
+        Some("2")
+    );
+    assert_eq!(
+        details.get("targetCoord").map(String::as_str),
+        Some("-2,6,-3")
+    );
+}
+
+#[tokio::test]
+async fn cutter_grid_plan_route_fails_closed_without_a_registered_profile() {
+    let request = CutterGridPlanRequestV1 {
+        challenge_id: "easy".into(),
+        challenge_version: 1,
+        program: CutterGridProgram {
+            kind: "cutter-grid".into(),
+            version: 1,
+            planner_version: CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION.into(),
+            nodes: vec![CutterGridNode::Move {
+                direction: CutterGridDirection::Up,
+                distance: 1,
+                source_block_id: "up-1".into(),
+            }],
+            source_block_count: 1,
+        },
+    };
+
+    let reply = router()
+        .dispatch(HttpCall::post("/api/v1/cutter-grid/plans", request))
+        .await;
+
+    assert_eq!(reply.status, 422);
+    assert!(reply.text().contains("TRAJECTORY_PLANNING_FAILED"));
+    assert!(reply.text().contains("planner-not-ready"));
+}
+
+#[tokio::test]
+async fn cutter_grid_plan_route_rejects_oversize_input_before_decoding() {
+    let reply = router()
+        .dispatch(HttpCall {
+            method: Method::Post,
+            path: "/api/v1/cutter-grid/plans".into(),
+            body: vec![b' '; CUTTER_GRID_PLAN_REQUEST_MAX_BYTES + 1],
+            player_id: None,
+            display_name: None,
+        })
+        .await;
+
+    assert_eq!(reply.status, 422);
+    assert!(reply.text().contains("PROGRAM_INVALID"));
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +310,12 @@ async fn a_session_can_be_driven_entirely_over_http() {
     router
         .dispatch(HttpCall::post(
             "/api/v1/submissions",
-            submission("sub-1", &item.challenge_id, item.challenge_version, safe_program()),
+            submission(
+                "sub-1",
+                &item.challenge_id,
+                item.challenge_version,
+                safe_program(),
+            ),
         ))
         .await;
 
@@ -268,7 +332,8 @@ async fn a_session_can_be_driven_entirely_over_http() {
         .await;
 
     assert_eq!(
-        responded.status, 200,
+        responded.status,
+        200,
         "the path is authoritative for identity: {}",
         responded.text()
     );
@@ -313,27 +378,32 @@ async fn a_round_can_be_created_joined_and_started_over_http() {
     // The challenge is withheld until the round starts.
     assert_eq!(
         router
-            .dispatch(HttpCall::get(format!("/api/v1/matches/{match_id}/challenge")))
+            .dispatch(HttpCall::get(format!(
+                "/api/v1/matches/{match_id}/challenge"
+            )))
             .await
             .status,
         409
     );
 
     let joined = router
-        .dispatch(
-            HttpCall::post(format!("/api/v1/matches/{match_id}/join"), ()).as_player("alice"),
-        )
+        .dispatch(HttpCall::post(format!("/api/v1/matches/{match_id}/join"), ()).as_player("alice"))
         .await;
     assert_eq!(joined.status, 200);
 
     let started = router
-        .dispatch(HttpCall::post(format!("/api/v1/matches/{match_id}/start"), ()))
+        .dispatch(HttpCall::post(
+            format!("/api/v1/matches/{match_id}/start"),
+            (),
+        ))
         .await;
     assert_eq!(started.status, 200);
 
     assert_eq!(
         router
-            .dispatch(HttpCall::get(format!("/api/v1/matches/{match_id}/challenge")))
+            .dispatch(HttpCall::get(format!(
+                "/api/v1/matches/{match_id}/challenge"
+            )))
             .await
             .status,
         200
@@ -352,19 +422,22 @@ async fn a_round_that_is_not_there_yet_says_so_in_its_own_code() {
     let match_id = created.json::<MatchState>().expect("state").match_id;
 
     let early = router
-        .dispatch(HttpCall::get(format!("/api/v1/matches/{match_id}/challenge")))
+        .dispatch(HttpCall::get(format!(
+            "/api/v1/matches/{match_id}/challenge"
+        )))
         .await;
     assert_eq!(early.status, 409);
     assert!(early.text().contains("MATCH_NOT_READY"), "{}", early.text());
     assert!(early.text().contains("revealed when the round starts"));
 
     router
-        .dispatch(
-            HttpCall::post(format!("/api/v1/matches/{match_id}/join"), ()).as_player("alice"),
-        )
+        .dispatch(HttpCall::post(format!("/api/v1/matches/{match_id}/join"), ()).as_player("alice"))
         .await;
     router
-        .dispatch(HttpCall::post(format!("/api/v1/matches/{match_id}/start"), ()))
+        .dispatch(HttpCall::post(
+            format!("/api/v1/matches/{match_id}/start"),
+            (),
+        ))
         .await;
 
     let running = router

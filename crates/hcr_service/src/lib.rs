@@ -31,13 +31,14 @@
 #![forbid(unsafe_code)]
 
 pub mod binding;
-#[cfg(feature = "hotaru")]
-pub mod deploy;
-#[cfg(feature = "hotaru")]
-pub mod hotaru_binding;
 pub mod catalog;
 pub mod clock;
+pub mod cutter_grid_planner;
+#[cfg(feature = "hotaru")]
+pub mod deploy;
 pub mod error;
+#[cfg(feature = "hotaru")]
+pub mod hotaru_binding;
 pub mod itemref;
 pub mod replay;
 pub mod rounds;
@@ -46,17 +47,23 @@ pub mod service;
 pub mod session;
 pub mod usage;
 
-pub use binding::{HttpCall, HttpReply, Method, Router, status_for};
+pub use binding::{
+    CUTTER_GRID_PLAN_REQUEST_MAX_BYTES, HttpCall, HttpReply, Method, Router, status_for,
+};
+pub use catalog::CatalogStore;
+pub use clock::{Clock, ManualClock, SharedClock, SystemClock, system_clock};
+pub use cutter_grid_planner::{
+    CUTTER_GRID_RUST_PLANNER_BUILD, CUTTER_GRID_RUST_PLANNER_IMPLEMENTATION,
+    CutterGridPlannedResponse, CutterGridPlannerPool, CutterGridProfileRegistry,
+};
 #[cfg(feature = "hotaru")]
 pub use deploy::{
     ConfigError, DEFAULT_BINDING, MIN_SIGNING_KEY_LEN, ServerConfig, check_binding, serve,
 };
-pub use catalog::CatalogStore;
-pub use clock::{Clock, ManualClock, SharedClock, SystemClock, system_clock};
-pub use rounds::MatchRegistry;
 pub use error::{ServiceError, ServiceResult};
 pub use itemref::{ItemRefClaims, ItemRefSigner};
 pub use replay::{ENGINE_VERSION, ReplayPool, diverged, program_hash};
+pub use rounds::MatchRegistry;
 pub use service::{HcrService, ServiceConfig};
 pub use session::{SessionHandle, SessionRegistry, SessionSpec};
 pub use usage::{UsageEvent, UsageLog};
