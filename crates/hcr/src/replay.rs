@@ -14,7 +14,7 @@ use crate::error::{ServiceError, ServiceResult};
 
 /// Build identifier reported with every score, so a result can be traced to the
 /// engine that produced it.
-pub const ENGINE_VERSION: &str = concat!("hcr_sim/", env!("CARGO_PKG_VERSION"));
+pub const ENGINE_VERSION: &str = concat!("hcr/", env!("CARGO_PKG_VERSION"));
 
 /// Cache key: an outcome depends on nothing but these three.
 type CacheKey = (String, u32, String);

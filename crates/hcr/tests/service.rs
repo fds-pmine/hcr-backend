@@ -185,7 +185,7 @@ async fn a_submission_is_scored_authoritatively() {
     assert_eq!(result.metrics.executed_command_count, 1);
     assert!(result.score.final_score > 0.0);
     assert_eq!(result.result_voxels_hash.len(), 64);
-    assert!(result.replay.engine_version.starts_with("hcr_sim/"));
+    assert!(result.replay.engine_version.starts_with("hcr/"));
 }
 
 #[tokio::test]
