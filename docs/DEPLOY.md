@@ -78,7 +78,7 @@ everything else is a few maps. Two shared cores and 512 MB is ample.
 ### Build
 
 ```sh
-cargo build --release -p hcr_service --features hotaru --bin hcr-server
+cargo build --release -p hcr --features hotaru --bin hcr-server
 sudo install -m0755 target/release/hcr-server /usr/local/bin/
 ```
 
@@ -106,7 +106,7 @@ Then put a reverse proxy in front — see §2.1 (nginx/aaPanel) or §2.2 (Caddy)
 ### Re-install
 
 ``````bash
-cargo build --release -p hcr_service --features hotaru --bin hcr-server
+cargo build --release -p hcr --features hotaru --bin hcr-server
 sudo install -m0755 target/release/hcr-server /usr/local/bin/
 sudo systemctl restart hcr-server
 sudo cp /etc/hcr-server.env /etc/hcr-server.env.bak
@@ -224,7 +224,7 @@ rate limiting in front of it — can be walked around by hitting the IP directly
    people stop.
 
 Three event kinds: `submission`, `sessionResponse`, `matchResults`. The full
-schema, and the reasoning, is in `crates/hcr_service/src/usage.rs`.
+schema, and the reasoning, is in `crates/hcr/src/usage.rs`.
 
 **Not recorded**, deliberately:
 
@@ -271,7 +271,7 @@ jq -r 'select(.kind=="submission") | [.challengeId, .completionScore] | @tsv' \
   (15 min after anyone last looked) and abandoned lobbies (30 min). Without it
   the process would grow for as long as it ran; it is started by the binary, and
   logs when it reclaims anything.
-- **The catalog is fixed at boot** from `hcr_service::seed`. There is no
+- **The catalog is fixed at boot** from `hcr::seed`. There is no
   authoring endpoint — adding a challenge means a redeploy.
 - **Rate limiting lives in the reverse proxy**, not in the service: the only
   caller identity the service has is one the client chooses, so a limit there is

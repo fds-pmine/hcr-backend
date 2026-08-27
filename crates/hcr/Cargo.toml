@@ -1,5 +1,5 @@
 [package]
-name = "hcr_service"
+name = "hcr"
 description = "HCR backend service core: catalog, authoritative replay, adaptive sessions."
 edition.workspace = true
 version.workspace = true
@@ -9,8 +9,8 @@ rust-version.workspace = true
 [dependencies]
 hcr_contract = { workspace = true, features = ["std"] }
 hcr_sim = { workspace = true, features = ["std", "planner"] }
-hcr_qbank = { path = "../hcr_qbank" }
-arona = { path = "../../../arona" }
+hcr_qbank = { version = "0.2.0", path = "../hcr_qbank" }
+arona = { version = "0.0.1" }
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
@@ -25,13 +25,13 @@ base64 = { version = "0.22", features = ["std"] }
 # `default-features = false` drops the `cli` binary and the akari template
 # engine, neither of which a service needs. This crate is std-only anyway — it
 # depends on arona and tokio — so the embedded constraints never applied here.
-hotaru = { path = "../../../hotaru/hotaru", default-features = false, features = [
+hotaru = { version = "0.8.6", default-features = false, features = [
     "http",
     "tokio",
     "trans",
 ], optional = true }
-hotaru_http = { path = "../../../hotaru/hotaru_http", optional = true }
-hotaru_core = { path = "../../../hotaru/hotaru_core", optional = true }
+hotaru_http = { version = "0.8.6", optional = true }
+hotaru_core = { version = "0.8.6", optional = true }
 
 [features]
 default = []

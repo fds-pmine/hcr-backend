@@ -202,7 +202,7 @@ tasks and call the result one number. SPEC v0.3 §15.1 already says the scores a
 fairness; this is what lets an analysis honour that.
 
 Compatibility rules, and the tests that hold them, are documented in
-[`crates/hcr_service/src/usage.rs`](../crates/hcr_service/src/usage.rs).
+[`crates/hcr/src/usage.rs`](../crates/hcr/src/usage.rs).
 
 ## 9. What this does not change
 

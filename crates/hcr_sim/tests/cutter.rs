@@ -18,7 +18,7 @@ use hcr_sim::*;
 const PLAN_FIXTURE: &str = include_str!("fixtures/cutter-grid-plan-v2.json");
 const VECTORS: &str = include_str!("fixtures/vectors.json");
 
-/// The challenge the server serves, from the same fixture `hcr_service` seeds
+/// The challenge the server serves, from the same fixture `hcr` seeds
 /// its catalog from.
 fn shipped_challenge() -> ChallengeDefinition {
     let vectors: serde_json::Value = serde_json::from_str(VECTORS).expect("vectors parse");

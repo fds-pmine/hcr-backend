@@ -192,7 +192,7 @@ servos at once "draws a lot of power, needs external supply".
 
 ```mermaid
 flowchart LR
-    B["Browser<br/>MQTT/WS"] --> S["hcr_service<br/>broker + gateway"]
+    B["Browser<br/>MQTT/WS"] --> S["hcr<br/>broker + gateway"]
     S -->|"TCP :8000<br/>'X 50;Y 90;'"| E["ESP8266<br/>stock firmware"]
     E -->|'{\"X\":90,…}'| S
 ```

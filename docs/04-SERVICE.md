@@ -10,7 +10,7 @@ hcr-backend/                    # cargo workspace
 ├── hcr_ws/                     # RFC 6455 ConnStream for hotaru   [std]
 ├── hcr_qbank/                  # arona integration      [std]
 │     HcrDynamicBank, ChallengeContent, difficulty model, calibration
-├── hcr_service/                # the hotaru app         [std, tokio]
+├── hcr/                # the hotaru app         [std, tokio]
 │     HTTP + MQTT + WS, broker policy, session actors, replay pool
 └── hcr_firmware/               # embassy client         [no_std]  → 05-EMBEDDED.md
 ```
@@ -105,7 +105,7 @@ Requirements the implementation must meet (from RFC 6455 and MQTT's WebSocket bi
 
 **Cost and alternative.** This is roughly 600–900 lines plus a conformance test suite (Autobahn is the
 standard one). If that is not wanted, the fallback is running an external broker with a WebSocket listener
-(mosquitto or EMQX) and having `hcr_service` connect to it as an ordinary MQTT client. That trades the
+(mosquitto or EMQX) and having `hcr` connect to it as an ordinary MQTT client. That trades the
 hotaru broker away — worth stating plainly, since the project's direction is to use hotaru.
 
 ## 4. Broker policy
@@ -187,7 +187,7 @@ its subscription tree is internal (`hotaru_mqtt_broker/src/broker.rs:88-177`). T
 
 | Option | Notes |
 | --- | --- |
-| **Loopback MQTT client** (recommended) | `hcr_service` runs an internal `MQTT::new()` client over loopback TCP subscribing `hcr/v1/+/dev/+/up/#`. Public API only, robust, one loopback hop |
+| **Loopback MQTT client** (recommended) | `hcr` runs an internal `MQTT::new()` client over loopback TCP subscribing `hcr/v1/+/dev/+/up/#`. Public API only, robust, one loopback hop |
 | In-process subscription hook | Cheaper, but requires an upstream addition to `hotaru_mqtt_broker` |
 
 Co-location still removes the external broker dependency entirely; the remaining cost is a loopback socket,

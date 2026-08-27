@@ -10,7 +10,7 @@ rust-version.workspace = true
 # arona is std-only (no #![no_std], uses std::time / HashMap / thread_rng), so
 # this crate is std-only too. That is by design: CAT is a server concern and
 # never runs on-device.
-arona = { path = "../../../arona" }
+arona = { version = "0.0.1" }
 hcr_contract = { workspace = true, features = ["std"] }
 # Difficulty features are geometric, so they reuse the simulation core's
 # voxel/world transforms rather than re-deriving them.

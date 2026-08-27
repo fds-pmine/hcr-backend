@@ -1,7 +1,7 @@
 //! A **development** server, seeded with the real shipped challenge.
 //!
 //! ```sh
-//! cargo run -p hcr_service --features hotaru --example serve
+//! cargo run -p hcr --features hotaru --example serve
 //! curl -s localhost:18623/api/v1/challenges | jq
 //! ```
 //!
@@ -18,8 +18,8 @@
 
 use std::sync::Arc;
 
-use hcr_service::deploy::{DEFAULT_BINDING, serve, spawn_sweeper};
-use hcr_service::{
+use hcr::deploy::{DEFAULT_BINDING, serve, spawn_sweeper};
+use hcr::{
     HcrService, ItemRefSigner, ReplayPool, Router, ServerConfig, ServiceConfig, UsageLog,
 };
 
@@ -33,7 +33,7 @@ use hcr_service::{
 const DEV_ORIGINS: &str = "http://localhost:5173,hcr://app";
 
 fn main() {
-    let catalog = hcr_service::seed::seed_catalog();
+    let catalog = hcr::seed::seed_catalog();
     println!("catalog seeded with {} challenge versions", catalog.len());
 
     let mut service = HcrService::new(

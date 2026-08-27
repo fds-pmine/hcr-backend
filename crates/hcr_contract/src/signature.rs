@@ -292,7 +292,7 @@ mod tests {
     /// moved and this port has to follow.
     const SHIPPED_CHALLENGE_SIGNATURE_V2: &str = "162f020fbedb41af";
 
-    /// Same fixture `hcr_service::seed` reads, so the challenge under test is
+    /// Same fixture `hcr::seed` reads, so the challenge under test is
     /// the one the server actually serves.
     const VECTORS: &str = include_str!("../../hcr_sim/tests/fixtures/vectors.json");
 

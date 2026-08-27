@@ -17,11 +17,11 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use hcr_service::{Router, hotaru_binding};
+//! # use hcr::{Router, hotaru_binding};
 //! # fn build(router: Arc<Router>) {
 //! // Each entry is (pattern, name, handler) ready for
 //! // `Endpoint::<HTTP>::endpoint(...)` followed by `APP.insert(...)`.
-//! for (pattern, name) in hcr_service::hotaru_binding::ROUTES {
+//! for (pattern, name) in hcr::hotaru_binding::ROUTES {
 //!     let _ = (pattern, name, router.clone());
 //! }
 //! # }

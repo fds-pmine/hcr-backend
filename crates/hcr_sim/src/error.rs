@@ -72,7 +72,7 @@ pub enum SimError {
 ///
 /// Each variant is a distinct claim the client made that did not survive being
 /// re-derived from the joint angles. They map onto stable wire error codes in
-/// `hcr_service`, so a frontend can react to the kind without parsing prose.
+/// `hcr`, so a frontend can react to the kind without parsing prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CutterRejection {
     /// Not a V2 ladder plan — wrong `kind`, `version` or planner build.

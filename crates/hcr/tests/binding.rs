@@ -5,7 +5,7 @@ use std::sync::Arc;
 use hcr_contract::api::ScoreInput;
 use hcr_contract::*;
 use hcr_qbank::{Blueprint, ExposureController, SessionConfig};
-use hcr_service::*;
+use hcr::*;
 use hcr_sim::ReplayOptions;
 
 mod common;

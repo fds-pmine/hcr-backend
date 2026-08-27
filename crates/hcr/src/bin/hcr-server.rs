@@ -17,8 +17,8 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use hcr_service::deploy::{check_binding, serve, spawn_sweeper};
-use hcr_service::{
+use hcr::deploy::{check_binding, serve, spawn_sweeper};
+use hcr::{
     HcrService, ItemRefSigner, ReplayPool, Router, ServerConfig, ServiceConfig, UsageLog,
 };
 
@@ -41,7 +41,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let catalog = hcr_service::seed::seed_catalog();
+    let catalog = hcr::seed::seed_catalog();
 
     let mut service = HcrService::new(
         catalog.clone(),
