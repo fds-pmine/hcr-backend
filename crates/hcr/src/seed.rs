@@ -21,7 +21,9 @@ use crate::CatalogStore;
 /// runs against the *real* hairstyle — 241 initial voxels, 229 target — rather
 /// than a toy. The fixture is generated from the TypeScript engine, so this is
 /// byte for byte the challenge the frontend ships.
-const VECTORS: &str = include_str!("../../hcr_sim/tests/fixtures/vectors.json");
+// Vendored from `hcr_sim`'s conformance fixture; see the note in
+// `cutter_grid_planner.rs` on why a published crate cannot reach a sibling.
+const VECTORS: &str = include_str!("../assets/vectors.json");
 
 /// Build a catalog: one authored challenge plus three generated items.
 pub fn seed_catalog() -> Arc<CatalogStore> {
