@@ -4,6 +4,8 @@ description = "Sans-io RFC 6455 WebSocket framing, sized for the MQTT-over-WebSo
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
 rust-version.workspace = true
 
 [dependencies]

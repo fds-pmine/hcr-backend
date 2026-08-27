@@ -4,6 +4,8 @@ description = "Deterministic HCR simulation core — kinematics, head-safety, vo
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
 rust-version.workspace = true
 
 [dependencies]

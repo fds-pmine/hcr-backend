@@ -4,6 +4,8 @@ description = "Adaptive question bank for HCR challenges, built on the arona CAT
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
 rust-version.workspace = true
 
 [dependencies]

@@ -4,6 +4,8 @@ description = "hcr.v1 wire contract — shared by the HCR backend, the replay en
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
 rust-version.workspace = true
 
 [dependencies]
