@@ -449,6 +449,10 @@ pub fn enumerate_cutter_grid_ik_candidates_v4(
         {
             continue;
         }
+        let minimum_joint_limit_margin = minimum_normalized_joint_limit_margin_v4(
+            &joint_angles,
+            &challenge.robot_config.joints,
+        );
         candidates.push(CutterGridIkCandidateV4 {
             id: stable_candidate_id(
                 options.candidate_namespace,
@@ -464,10 +468,7 @@ pub fn enumerate_cutter_grid_ik_candidates_v4(
                 &challenge.voxel_config,
                 &challenge.robot_config.geometry,
             ),
-            minimum_joint_limit_margin: minimum_normalized_joint_limit_margin_v4(
-                &joint_angles,
-                &challenge.robot_config.joints,
-            ),
+            minimum_joint_limit_margin,
         });
     }
 
@@ -872,10 +873,15 @@ fn compare_angles(
     joints: &[JointConfig],
 ) -> Ordering {
     for joint in joints {
-        let ordering = compare_number(
-            left.get(&joint.id).copied().unwrap_or(f64::NAN),
-            right.get(&joint.id).copied().unwrap_or(f64::NAN),
-        );
+        // TypeScript's `compareAngles` is deliberately exact here. These are
+        // the final deterministic tie-breakers after tolerant score fields;
+        // applying the score tolerance a second time can select a different
+        // entry branch across the frontend/Rust boundary.
+        let ordering = left
+            .get(&joint.id)
+            .copied()
+            .unwrap_or(f64::NAN)
+            .total_cmp(&right.get(&joint.id).copied().unwrap_or(f64::NAN));
         if ordering != Ordering::Equal {
             return ordering;
         }
@@ -1853,7 +1859,7 @@ fn generate_endpoint_candidates(
     seed_budget: usize,
     candidate_limit: usize,
 ) -> Vec<Vec<CutterGridIkCandidateV4>> {
-    let mut result = Vec::new();
+    let mut result: Vec<Vec<CutterGridIkCandidateV4>> = Vec::new();
     for layer in layers {
         let previous = result.last().cloned().unwrap_or_default();
         result.push(candidates_for_layer(
@@ -2876,7 +2882,8 @@ fn retime_detour_ptps_v4(
             &second_geometry.end,
             first_duration_ms,
             second_duration_ms,
-        )?;
+        )
+        .ok_or(hcr_contract::CutterGridPlanningErrorCodeV4::PtpCertificateFailed)?;
         let first = create_cutter_grid_sync_ptp_with_boundary_states_v4(
             challenge,
             &first_geometry.start,

@@ -250,7 +250,7 @@ impl CutterGridAction {
 }
 
 /// The player's program, as written.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CutterGridProgram {
     /// Always `"cutter-grid"`. Present so a reader can tell the two program

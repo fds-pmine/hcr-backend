@@ -136,6 +136,20 @@ fn the_cutter_axis_is_not_driven_by_a_joint() {
     }
 }
 
+/// Electron relies on one firmware-wide Home value before entering a
+/// challenge-specific pose. Cover E explicitly too: it has no simulated joint,
+/// so the mapping-centre test below cannot otherwise detect its Home drifting.
+#[test]
+fn every_firmware_axis_homes_at_ninety_degrees() {
+    for travel in &FIRMWARE_AXES {
+        assert_eq!(
+            travel.home_deg, 90.0,
+            "servo {:?} homes at {}° instead of the Electron contract's 90°",
+            travel.axis, travel.home_deg,
+        );
+    }
+}
+
 /// Every servo homes at 90°, and every mapping centres there.
 ///
 /// The mapping's `centerDeg` is the servo angle that `offsetDeg` corresponds to.

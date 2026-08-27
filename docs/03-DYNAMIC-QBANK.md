@@ -216,7 +216,7 @@ anything added by hand — has no reference to derive from, so it is audited fro
 `HCR_Simulator_Frontend/tests/unit/reachability.test.ts`: sweep the collision-free joint space, union every
 hair voxel the tool passes through, and fail if a target asks for anything outside it.
 
-On the shipped head that dead zone is **91 of 241 voxels (37.8%)** — one solid wedge on the far side from
+On the shipped head that dead zone is **94 of 241 voxels (39.0%)** — one solid wedge on the far side from
 the arm, worst at the crown, where the elbow meets the skull before the tool arrives.
 
 The two guarantees point opposite ways and neither replaces the other:
@@ -230,7 +230,8 @@ The sweep is necessary, not sufficient: touching every asked voxel in *some* pos
 touching them all, in one run, inside the command budget. It rules targets out; it cannot rule them in.
 
 The sweep costs minutes, so `npm run reachability` caches it to `tests/fixtures/reachability.json`. Each
-entry stores a signature over the geometry, lattice, hair and sampling grid it was measured from, and the
+entry stores a signature over the geometry, servo calibration (`axis`, `centerDeg`, `direction`,
+`offsetDeg`), lattice, hair and sampling grid it was measured from, and the
 audit **fails on a mismatch instead of trusting the cache** — a reachable set that outlived its geometry
 would clear an arm that can no longer reach any of it. The signature deliberately excludes
 `initialAngleDeg`: the sweep enumerates each joint's whole range, so a program's opening pose cannot change

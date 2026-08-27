@@ -175,6 +175,7 @@ impl CutterGridPlannerPool {
             .map_err(|_| ServiceError::RateLimited)?;
         let challenge = challenge.challenge.clone();
         let program = program.clone();
+        let profile_signature = profile.profile_signature.clone();
         let started = Instant::now();
         let plan = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -191,7 +192,7 @@ impl CutterGridPlannerPool {
                 version: CUTTER_GRID_PLAN_API_VERSION,
                 planner_implementation: CUTTER_GRID_RUST_PLANNER_IMPLEMENTATION.into(),
                 planner_build: CUTTER_GRID_RUST_PLANNER_BUILD.into(),
-                profile_signature: profile.profile_signature.clone(),
+                profile_signature,
                 planning_duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
                 plan,
             },

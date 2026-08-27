@@ -64,7 +64,9 @@ what `hcr-fw` reports back. `JointConfig.min/maxAngleDeg` are therefore directly
 firmware's own limits, which is what makes the table below a check rather than a conversion exercise.
 
 Firmware limits are `AXES` in `hcr-fw/hcr-gateway/src/robot/axis_config.rs`, converted from tenths of a
-degree. Every axis homes at 90°.
+degree. Every axis homes at 90°. The Electron sequencer must call `/api/home` at the start of every
+hardware plan, hold for 1.5 seconds, and only then enter the Challenge start pose; it rejects plans that
+bypass this 90° hardware Home.
 
 | Simulator joint | Servo range | Geometric | Axis | Firmware travel | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -144,7 +146,7 @@ Measured on the shipped challenge's reference program:
 | Block endpoints | **5/5** reachable roll-free and clear of the head |
 | Individual cell centres | **22/22** reachable, if a finer trace is ever wanted |
 | Landing accuracy | within a quarter voxel of each destination |
-| Arm steps | 5, one per block |
+| Arm steps | **6**: one mandatory 90° Home, then 5 block endpoints |
 
 `buildCutterArmEndpointPlan` is what the dock sends. It refuses whole — sending nothing — if any single
 destination cannot be solved, rather than driving to the ones it can and stopping somewhere arbitrary.
