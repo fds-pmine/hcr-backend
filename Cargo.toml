@@ -18,13 +18,13 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.2.0"
+version = "0.3.0"
 license = "MIT"
 rust-version = "1.85"
 
 [workspace.dependencies]
-hcr_contract = { version = "0.2.0", path = "crates/hcr_contract", default-features = false }
-hcr_sim = { version = "0.2.0", path = "crates/hcr_sim", default-features = false }
+hcr_contract = { version = "0.3.0", path = "crates/hcr_contract", default-features = false }
+hcr_sim = { version = "0.3.0", path = "crates/hcr_sim", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }

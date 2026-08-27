@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 hcr_contract = { workspace = true, features = ["std"] }
 hcr_sim = { workspace = true, features = ["std", "planner"] }
-hcr_qbank = { version = "0.2.0", path = "../hcr_qbank" }
+hcr_qbank = { version = "0.3.0", path = "../hcr_qbank" }
 arona = { version = "0.0.1" }
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
