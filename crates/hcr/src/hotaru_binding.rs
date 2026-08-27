@@ -90,6 +90,21 @@ pub const PLAYER_HEADER: &str = "x-hcr-player";
 /// [`crate::binding::HttpCall::display_name`].
 pub const PLAYER_NAME_HEADER: &str = "x-hcr-player-name";
 
+/// Request headers used by the browser clients.
+///
+/// Keep this list in sync with `researchHeaders()` in the frontend. A custom
+/// header that is missing here makes the browser reject the CORS preflight
+/// before the submission can reach the service, which otherwise looks like a
+/// generic network failure to the user.
+const CORS_ALLOW_HEADERS: &str = concat!(
+    "Content-Type, Authorization, X-HCR-Player, X-HCR-Player-Name, ",
+    "X-HCR-Research-Program-And-Scores, ",
+    "X-HCR-Research-Language-Consent, ",
+    "X-HCR-Research-Utc-Offset-Consent, ",
+    "X-HCR-Research-Language, ",
+    "X-HCR-Research-Utc-Offset-Minutes",
+);
+
 /// Serve one request.
 ///
 /// The single function a hotaru endpoint needs to call.
@@ -189,10 +204,7 @@ fn with_cors(response: HttpResponse, allow_origin: Option<&str>) -> HttpResponse
         Some(origin) => response
             .add_header("Access-Control-Allow-Origin", origin)
             .add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            .add_header(
-                "Access-Control-Allow-Headers",
-                "Content-Type, Authorization, X-HCR-Player, X-HCR-Player-Name",
-            )
+            .add_header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
             // The response now varies by request origin, so a shared cache must
             // not serve one front end's response to the other.
             .add_header("Vary", "Origin"),
@@ -254,7 +266,30 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::matching_origin;
+    use super::{CORS_ALLOW_HEADERS, matching_origin};
+
+    #[test]
+    fn cors_allows_every_frontend_submission_header() {
+        for header in [
+            "Content-Type",
+            "Authorization",
+            "X-HCR-Player",
+            "X-HCR-Player-Name",
+            "X-HCR-Research-Program-And-Scores",
+            "X-HCR-Research-Language-Consent",
+            "X-HCR-Research-Utc-Offset-Consent",
+            "X-HCR-Research-Language",
+            "X-HCR-Research-Utc-Offset-Minutes",
+        ] {
+            assert!(
+                CORS_ALLOW_HEADERS
+                    .split(',')
+                    .map(str::trim)
+                    .any(|allowed| allowed.eq_ignore_ascii_case(header)),
+                "CORS preflight does not allow {header}",
+            );
+        }
+    }
 
     #[test]
     fn echoes_only_an_origin_on_the_list() {
