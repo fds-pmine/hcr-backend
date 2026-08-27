@@ -942,6 +942,18 @@ fn radians_to_degrees(value: f64) -> f64 {
 pub const CUTTER_GRID_V4_MIN_PTP_DURATION_MS: f64 = 160.0;
 /// Maximum joint change between geometric PTP certificate samples.
 pub const CUTTER_GRID_V4_PTP_MAX_JOINT_SAMPLE_DELTA_DEG: f64 = 0.5;
+
+/// Certified spacing between neighbouring geometry samples, as a divisor of the
+/// voxel size.
+///
+/// A joint-angle grid does not bound how far the tool travels between samples:
+/// the same 0.5° step sweeps further the more the arm is extended. Sampling
+/// that skips more than this leaves the collision and limit checks unproven in
+/// the gap it skipped.
+pub const CUTTER_GRID_V4_PTP_MAX_END_EFFECTOR_SAMPLE_DISTANCE_DIVISOR: f64 = 8.0;
+
+/// Refinement ceiling for one certified primitive.
+pub const CUTTER_GRID_V4_PTP_MAXIMUM_SAMPLES: u32 = 131_072;
 /// Fixed upper bound on one compact PTP retiming loop.
 pub const CUTTER_GRID_V4_MAX_RETIMING_ATTEMPTS: usize = 48;
 /// Adaptive certificate starts with at least eight intervals.
@@ -1236,61 +1248,80 @@ pub fn certify_cutter_grid_sync_ptp_geometry_v4(
             let end = primitive.end.joint_angles.get(&joint.id).copied()?;
             Some(max.max((end - start).abs()))
         })?;
-    let sample_count =
+    let mut sample_count =
         (libm::ceil(max_delta / CUTTER_GRID_V4_PTP_MAX_JOINT_SAMPLE_DELTA_DEG) as u32).max(1);
-    let mut previous: Option<CutterGridPtpSampleV4> = None;
-    let mut minimum_head_clearance = f64::INFINITY;
-    let mut minimum_joint_limit_margin = f64::INFINITY;
-    let mut maximum_normalized_joint_step = 0.0_f64;
-    for index in 0..=sample_count {
-        let sample = evaluate_cutter_grid_sync_ptp_v4(
-            challenge,
-            primitive,
-            primitive.duration_ms * f64::from(index) / f64::from(sample_count),
-        )?;
-        if !within_joint_limits(&sample.joint_angles, &challenge.robot_config.joints) {
-            return None;
-        }
-        let pose = compute_robot_pose(
-            &challenge.robot_config,
-            &JointAngles::from_ordered(sample.joint_angles.clone()),
-        )
-        .ok()?;
-        if find_robot_head_collision(
-            &pose,
-            &challenge.voxel_config,
-            &challenge.robot_config.geometry,
-        )
-        .is_some()
-        {
-            return None;
-        }
-        minimum_head_clearance = minimum_head_clearance.min(measure_robot_head_clearance(
-            &pose,
-            &challenge.voxel_config,
-            &challenge.robot_config.geometry,
-        ));
-        minimum_joint_limit_margin =
-            minimum_joint_limit_margin.min(minimum_normalized_joint_limit_margin_v4(
-                &sample.joint_angles,
-                &challenge.robot_config.joints,
+    let maximum_sample_distance = challenge.voxel_config.size
+        / CUTTER_GRID_V4_PTP_MAX_END_EFFECTOR_SAMPLE_DISTANCE_DIVISOR;
+    // The joint grid is only the starting resolution. Refine until neighbouring
+    // samples are close enough in space for the checks between them to mean
+    // something, exactly as the frontend certifier does — a coarser grid would
+    // report a smaller joint step for the same motion and make two planners
+    // disagree about which branch is cheapest.
+    while sample_count <= CUTTER_GRID_V4_PTP_MAXIMUM_SAMPLES {
+        let mut previous: Option<CutterGridPtpSampleV4> = None;
+        let mut minimum_head_clearance = f64::INFINITY;
+        let mut minimum_joint_limit_margin = f64::INFINITY;
+        let mut maximum_normalized_joint_step = 0.0_f64;
+        let mut respects_end_effector_sampling = true;
+        for index in 0..=sample_count {
+            let sample = evaluate_cutter_grid_sync_ptp_v4(
+                challenge,
+                primitive,
+                primitive.duration_ms * f64::from(index) / f64::from(sample_count),
+            )?;
+            if !within_joint_limits(&sample.joint_angles, &challenge.robot_config.joints) {
+                return None;
+            }
+            let pose = compute_robot_pose(
+                &challenge.robot_config,
+                &JointAngles::from_ordered(sample.joint_angles.clone()),
+            )
+            .ok()?;
+            if find_robot_head_collision(
+                &pose,
+                &challenge.voxel_config,
+                &challenge.robot_config.geometry,
+            )
+            .is_some()
+            {
+                return None;
+            }
+            minimum_head_clearance = minimum_head_clearance.min(measure_robot_head_clearance(
+                &pose,
+                &challenge.voxel_config,
+                &challenge.robot_config.geometry,
             ));
-        if let Some(previous) = &previous {
-            maximum_normalized_joint_step =
-                maximum_normalized_joint_step.max(normalized_joint_distance_v4(
-                    &previous.joint_angles,
+            minimum_joint_limit_margin =
+                minimum_joint_limit_margin.min(minimum_normalized_joint_limit_margin_v4(
                     &sample.joint_angles,
                     &challenge.robot_config.joints,
                 ));
+            if let Some(previous) = &previous {
+                maximum_normalized_joint_step =
+                    maximum_normalized_joint_step.max(normalized_joint_distance_v4(
+                        &previous.joint_angles,
+                        &sample.joint_angles,
+                        &challenge.robot_config.joints,
+                    ));
+                if distance(previous.end_effector, sample.end_effector)
+                    > maximum_sample_distance + 1e-12
+                {
+                    respects_end_effector_sampling = false;
+                }
+            }
+            previous = Some(sample);
         }
-        previous = Some(sample);
+        if respects_end_effector_sampling {
+            return Some(CutterGridPtpCertificateV4 {
+                minimum_head_clearance,
+                minimum_joint_limit_margin,
+                maximum_normalized_joint_step,
+                sample_count: sample_count + 1,
+            });
+        }
+        sample_count = sample_count.checked_mul(2)?;
     }
-    Some(CutterGridPtpCertificateV4 {
-        minimum_head_clearance,
-        minimum_joint_limit_margin,
-        maximum_normalized_joint_step,
-        sample_count: sample_count + 1,
-    })
+    None
 }
 
 /// Measure conservative exact extrema of the serialized quintic's q/v/a/j.
@@ -3244,6 +3275,59 @@ mod tests {
             planner_version: CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION.into(),
             nodes,
             source_block_count: 1,
+        }
+    }
+
+    /// Geometry certification samples finely enough to have proven the gaps.
+    ///
+    /// The joint grid alone under-resolves an extended arm, and a coarser grid
+    /// also reports a smaller joint step for the same motion — which is how
+    /// this port and the frontend once selected different branches for the
+    /// same program while both believed they were optimal.
+    #[test]
+    fn geometry_certification_refines_until_samples_resolve_the_tool_path() {
+        let challenge = shipped_challenge();
+        let start = [
+            ("baseYaw", 103.429_522_701),
+            ("shoulderRoll", 45.0),
+            ("shoulder", 62.133_930_263),
+            ("elbow", 33.325_674_399),
+            ("wrist", 137.895_384_556),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.parse::<JointId>().expect("joint id"), value))
+        .collect::<BTreeMap<_, _>>();
+        let end = [
+            ("baseYaw", 108.149_858_075),
+            ("shoulderRoll", 45.0),
+            ("shoulder", 67.338_782_027),
+            ("elbow", 34.715_581_547),
+            ("wrist", 141.866_026_860),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.parse::<JointId>().expect("joint id"), value))
+        .collect::<BTreeMap<_, _>>();
+        let primitive = create_cutter_grid_sync_ptp_primitive_v4(&challenge, &start, &end);
+        let certificate = certify_cutter_grid_sync_ptp_geometry_v4(&challenge, &primitive)
+            .expect("the primitive certifies");
+
+        // The unrefined joint grid would have stopped at 12 samples here.
+        assert!(certificate.sample_count > 12);
+        let maximum_sample_distance = challenge.voxel_config.size
+            / CUTTER_GRID_V4_PTP_MAX_END_EFFECTOR_SAMPLE_DISTANCE_DIVISOR;
+        let mut previous: Option<Vec3> = None;
+        for index in 0..certificate.sample_count {
+            let sample = evaluate_cutter_grid_sync_ptp_v4(
+                &challenge,
+                &primitive,
+                primitive.duration_ms * f64::from(index)
+                    / f64::from(certificate.sample_count - 1),
+            )
+            .expect("sample evaluates");
+            if let Some(previous) = previous {
+                assert!(distance(previous, sample.end_effector) <= maximum_sample_distance + 1e-12);
+            }
+            previous = Some(sample.end_effector);
         }
     }
 

@@ -48,6 +48,7 @@ const LADDER_CONFIG_JSON: &str = concat!(
     r#""entryOptionLimit":32,"#,
     r#""edgeMaximumJointDeltaDeg":0.5,"#,
     r#""edgeMaximumEndEffectorDistanceDivisor":16,"#,
+    r#""edgeMaximumSampleRefinements":6,"#,
     r#""entryPrmHaltonNodes":[2048,8192],"#,
     r#""entryPrmNeighbors":24}"#
 );
@@ -289,7 +290,7 @@ mod tests {
     /// Read from `tests/fixtures/cutter-grid-profile-v2.json` in the frontend
     /// repository. If this constant and that file ever disagree, the frontend
     /// moved and this port has to follow.
-    const SHIPPED_CHALLENGE_SIGNATURE_V2: &str = "7d5a4afd61db49ea";
+    const SHIPPED_CHALLENGE_SIGNATURE_V2: &str = "162f020fbedb41af";
 
     /// Same fixture `hcr_service::seed` reads, so the challenge under test is
     /// the one the server actually serves.

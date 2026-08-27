@@ -3,11 +3,11 @@
   "engine": "typescript",
   "tickMs": 5,
   "initialVoxelCount": 241,
-  "targetVoxelCount": 229,
+  "targetVoxelCount": 230,
   "challenge": {
     "id": "neat-short-cap",
     "name": "Neat Short Haircut",
-    "description": "Twelve voxels on the crown have to come off, and nothing else. Lift the tool clear of the head first — the arm cannot swing across at rest — then sweep Base Yaw over the crown. One pass gets most of it; the last patch sits at a different height. Finish the Lessons if you want this broken down step by step.",
+    "description": "Eleven voxels on the crown have to come off, and nothing else. Every hardware motor starts at 90°. Sweep X · Base Yaw from 90° to 150° while leaving Y, Z, B, and E at Home. Finish the Lessons if you want the motion broken down step by step.",
     "robotConfig": {
       "joints": [
         {
@@ -16,13 +16,13 @@
           "axis": "y",
           "minAngleDeg": 30,
           "maxAngleDeg": 150,
-          "initialAngleDeg": 45,
+          "initialAngleDeg": 90,
           "speedDegPerSec": 60,
           "servo": {
             "axis": "X",
             "centerDeg": 90,
             "direction": 1,
-            "offsetDeg": 0
+            "offsetDeg": -45
           }
         },
         {
@@ -40,13 +40,13 @@
           "axis": "z",
           "minAngleDeg": 30,
           "maxAngleDeg": 150,
-          "initialAngleDeg": 95,
+          "initialAngleDeg": 90,
           "speedDegPerSec": 45,
           "servo": {
             "axis": "Y",
             "centerDeg": 90,
             "direction": 1,
-            "offsetDeg": 40
+            "offsetDeg": 70
           }
         },
         {
@@ -55,13 +55,13 @@
           "axis": "z",
           "minAngleDeg": 17.5,
           "maxAngleDeg": 162.5,
-          "initialAngleDeg": 72.5,
+          "initialAngleDeg": 90,
           "speedDegPerSec": 60,
           "servo": {
             "axis": "Z",
             "centerDeg": 90,
             "direction": 1,
-            "offsetDeg": -62.5
+            "offsetDeg": 10
           }
         },
         {
@@ -70,13 +70,13 @@
           "axis": "z",
           "minAngleDeg": 0,
           "maxAngleDeg": 180,
-          "initialAngleDeg": 125,
+          "initialAngleDeg": 90,
           "speedDegPerSec": 75,
           "servo": {
             "axis": "B",
             "centerDeg": 90,
             "direction": 1,
-            "offsetDeg": 0
+            "offsetDeg": -80
           }
         }
       ],
@@ -1654,6 +1654,11 @@
         },
         {
           "x": -2,
+          "y": 1,
+          "z": 4
+        },
+        {
+          "x": -2,
           "y": 2,
           "z": -3
         },
@@ -2490,50 +2495,10 @@
         "blocks": [
           {
             "type": "hcr_set_joint_angle",
-            "id": "starter-shoulder-roll",
+            "id": "starter-base-sweep",
             "fields": {
-              "JOINT_ID": "shoulderRoll",
-              "ANGLE": 15
-            },
-            "next": {
-              "block": {
-                "type": "hcr_set_joint_angle",
-                "id": "starter-shoulder",
-                "fields": {
-                  "JOINT_ID": "shoulder",
-                  "ANGLE": 130
-                },
-                "next": {
-                  "block": {
-                    "type": "hcr_set_joint_angle",
-                    "id": "starter-elbow",
-                    "fields": {
-                      "JOINT_ID": "elbow",
-                      "ANGLE": 152.5
-                    },
-                    "next": {
-                      "block": {
-                        "type": "hcr_set_joint_angle",
-                        "id": "starter-wrist",
-                        "fields": {
-                          "JOINT_ID": "wrist",
-                          "ANGLE": 10
-                        },
-                        "next": {
-                          "block": {
-                            "type": "hcr_set_joint_angle",
-                            "id": "starter-base-sweep",
-                            "fields": {
-                              "JOINT_ID": "baseYaw",
-                              "ANGLE": 145
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+              "JOINT_ID": "baseYaw",
+              "ANGLE": 150
             },
             "x": 40,
             "y": 40
@@ -2547,8 +2512,8 @@
         "efficiency": 0.25,
         "time": 0.15
       },
-      "referenceProgramCost": 6.25,
-      "referenceTimeMs": 5645,
+      "referenceProgramCost": 1.25,
+      "referenceTimeMs": 1000,
       "commandWeight": 0.25
     }
   },
@@ -2573,7 +2538,7 @@
         "metrics": {
           "sourceBlockCount": 1,
           "executedCommandCount": 1,
-          "estimatedDurationMs": 250
+          "estimatedDurationMs": 1000
         },
         "score": {
           "completionScore": 0,
@@ -2585,9 +2550,9 @@
         "jointAngles": {
           "baseYaw": 30,
           "shoulderRoll": 0,
-          "shoulder": 95,
-          "elbow": 72.5,
-          "wrist": 125
+          "shoulder": 90,
+          "elbow": 90,
+          "wrist": 90
         },
         "remainingVoxelCount": 241,
         "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",
@@ -2864,17 +2829,17 @@
         },
         "score": {
           "completionScore": 0,
-          "efficiencyScore": 100,
+          "efficiencyScore": 50,
           "timeScore": 100,
-          "finalScore": 40,
+          "finalScore": 27.5,
           "programCost": 2.5
         },
         "jointAngles": {
-          "baseYaw": 45,
+          "baseYaw": 90,
           "shoulderRoll": 0,
-          "shoulder": 95,
-          "elbow": 72.5,
-          "wrist": 125
+          "shoulder": 90,
+          "elbow": 90,
+          "wrist": 90
         },
         "remainingVoxelCount": 241,
         "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",
@@ -3143,7 +3108,7 @@
         "metrics": {
           "sourceBlockCount": 1,
           "executedCommandCount": 1,
-          "estimatedDurationMs": 0
+          "estimatedDurationMs": 750
         },
         "score": {
           "completionScore": 0,
@@ -3155,9 +3120,9 @@
         "jointAngles": {
           "baseYaw": 45,
           "shoulderRoll": 0,
-          "shoulder": 95,
-          "elbow": 72.5,
-          "wrist": 125
+          "shoulder": 90,
+          "elbow": 90,
+          "wrist": 90
         },
         "remainingVoxelCount": 241,
         "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",
@@ -3421,20 +3386,26 @@
         "sourceBlockCount": 1
       },
       "expect": {
-        "status": "error",
-        "errorMessage": "Elbow Joint would contact the head. baseYaw stopped at 55.52° — the highlighted block asked for more.",
+        "status": "completed",
+        "errorMessage": null,
         "metrics": {
           "sourceBlockCount": 1,
-          "executedCommandCount": 0,
-          "estimatedDurationMs": 750
+          "executedCommandCount": 1,
+          "estimatedDurationMs": 0
         },
-        "score": null,
+        "score": {
+          "completionScore": 0,
+          "efficiencyScore": 100,
+          "timeScore": 100,
+          "finalScore": 40,
+          "programCost": 1.25
+        },
         "jointAngles": {
-          "baseYaw": 55.5179443359375,
+          "baseYaw": 90,
           "shoulderRoll": 0,
-          "shoulder": 95,
-          "elbow": 72.5,
-          "wrist": 125
+          "shoulder": 90,
+          "elbow": 90,
+          "wrist": 90
         },
         "remainingVoxelCount": 241,
         "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",
@@ -3716,21 +3687,21 @@
         "metrics": {
           "sourceBlockCount": 3,
           "executedCommandCount": 6,
-          "estimatedDurationMs": 1416.6666666666665
+          "estimatedDurationMs": 2166.6666666666665
         },
         "score": {
           "completionScore": 0,
-          "efficiencyScore": 100,
-          "timeScore": 100,
-          "finalScore": 40,
+          "efficiencyScore": 27.77777777777778,
+          "timeScore": 46.15384615384615,
+          "finalScore": 13.867521367521366,
           "programCost": 4.5
         },
         "jointAngles": {
           "baseYaw": 50,
           "shoulderRoll": 0,
-          "shoulder": 95,
-          "elbow": 72.5,
-          "wrist": 125
+          "shoulder": 90,
+          "elbow": 90,
+          "wrist": 90
         },
         "remainingVoxelCount": 241,
         "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",
@@ -4023,13 +3994,13 @@
         "metrics": {
           "sourceBlockCount": 5,
           "executedCommandCount": 5,
-          "estimatedDurationMs": 2833.333333333333
+          "estimatedDurationMs": 3297.222222222222
         },
         "score": {
           "completionScore": 0,
-          "efficiencyScore": 100,
-          "timeScore": 100,
-          "finalScore": 40,
+          "efficiencyScore": 20,
+          "timeScore": 30.32855939342881,
+          "finalScore": 9.54928390901432,
           "programCost": 6.25
         },
         "jointAngles": {
@@ -4330,13 +4301,13 @@
         "metrics": {
           "sourceBlockCount": 5,
           "executedCommandCount": 5,
-          "estimatedDurationMs": 5644.444444444444
+          "estimatedDurationMs": 4247.222222222223
         },
         "score": {
-          "completionScore": 91.66666666666666,
-          "efficiencyScore": 100,
-          "timeScore": 100,
-          "finalScore": 95,
+          "completionScore": 0,
+          "efficiencyScore": 20,
+          "timeScore": 23.544800523217788,
+          "finalScore": 8.531720078482667,
           "programCost": 6.25
         },
         "jointAngles": {
@@ -4346,8 +4317,8 @@
           "elbow": 152.5,
           "wrist": 10
         },
-        "remainingVoxelCount": 230,
-        "resultVoxelsHash": "9fa2b351dcc95c576ff1cc32a19d81045d1e41f6564c292bb344d8dcb95cd5a3",
+        "remainingVoxelCount": 241,
+        "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",
         "remainingVoxels": [
           "-1,-1,-4",
           "-1,-1,4",
@@ -4396,6 +4367,14 @@
           "-2,3,-3",
           "-2,3,2",
           "-2,3,3",
+          "-2,4,-1",
+          "-2,4,-2",
+          "-2,4,0",
+          "-2,4,1",
+          "-2,4,2",
+          "-2,5,-1",
+          "-2,5,0",
+          "-2,5,1",
           "-3,-1,-2",
           "-3,-1,-3",
           "-3,-1,2",
@@ -4425,6 +4404,9 @@
           "-3,3,0",
           "-3,3,1",
           "-3,3,2",
+          "-3,4,-1",
+          "-3,4,0",
+          "-3,4,1",
           "-4,-1,-1",
           "-4,-1,-2",
           "-4,-1,0",
@@ -4639,13 +4621,13 @@
         "metrics": {
           "sourceBlockCount": 7,
           "executedCommandCount": 10,
-          "estimatedDurationMs": 14811.111111111113
+          "estimatedDurationMs": 13413.88888888889
         },
         "score": {
-          "completionScore": 91.66666666666666,
-          "efficiencyScore": 65.78947368421053,
-          "timeScore": 38.11327831957989,
-          "finalScore": 77.16436016898962,
+          "completionScore": 0,
+          "efficiencyScore": 13.157894736842104,
+          "timeScore": 7.45495961896873,
+          "finalScore": 4.407717627055836,
           "programCost": 9.5
         },
         "jointAngles": {
@@ -4655,8 +4637,8 @@
           "elbow": 152.5,
           "wrist": 10
         },
-        "remainingVoxelCount": 230,
-        "resultVoxelsHash": "9fa2b351dcc95c576ff1cc32a19d81045d1e41f6564c292bb344d8dcb95cd5a3",
+        "remainingVoxelCount": 241,
+        "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",
         "remainingVoxels": [
           "-1,-1,-4",
           "-1,-1,4",
@@ -4705,6 +4687,14 @@
           "-2,3,-3",
           "-2,3,2",
           "-2,3,3",
+          "-2,4,-1",
+          "-2,4,-2",
+          "-2,4,0",
+          "-2,4,1",
+          "-2,4,2",
+          "-2,5,-1",
+          "-2,5,0",
+          "-2,5,1",
           "-3,-1,-2",
           "-3,-1,-3",
           "-3,-1,2",
@@ -4734,6 +4724,9 @@
           "-3,3,0",
           "-3,3,1",
           "-3,3,2",
+          "-3,4,-1",
+          "-3,4,0",
+          "-3,4,1",
           "-4,-1,-1",
           "-4,-1,-2",
           "-4,-1,0",
@@ -4924,21 +4917,21 @@
         "metrics": {
           "sourceBlockCount": 3,
           "executedCommandCount": 40,
-          "estimatedDurationMs": 16499.999999999993
+          "estimatedDurationMs": 17249.999999999993
         },
         "score": {
           "completionScore": 0,
-          "efficiencyScore": 48.07692307692308,
-          "timeScore": 34.212121212121225,
-          "finalScore": 17.151048951048953,
+          "efficiencyScore": 9.615384615384617,
+          "timeScore": 5.797101449275364,
+          "finalScore": 3.273411371237459,
           "programCost": 13
         },
         "jointAngles": {
           "baseYaw": 55,
           "shoulderRoll": 0,
-          "shoulder": 95,
-          "elbow": 72.5,
-          "wrist": 125
+          "shoulder": 90,
+          "elbow": 90,
+          "wrist": 90
         },
         "remainingVoxelCount": 241,
         "resultVoxelsHash": "82ee48fb0a001d92ff61c14dbc91386f40fd08985026d34be0855bbd497b67e1",

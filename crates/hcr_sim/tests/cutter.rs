@@ -82,13 +82,13 @@ fn the_reference_program_scores_a_perfect_cut() {
 
 /// Command count is the server's own expansion, and it is per *cell*.
 ///
-/// The reference program is five `move` blocks totalling 22 cells. A server that
-/// counted blocks would report 5 and quietly make long moves free.
+/// The reference program is nine `move` blocks totalling 22 cells. A server that
+/// counted blocks would report 9 and quietly make long moves free.
 #[test]
 fn commands_are_counted_per_cell_not_per_block() {
     let challenge = shipped_challenge();
     let submission = submission();
-    assert_eq!(submission.program.nodes.len(), 5, "fixture shape changed");
+    assert_eq!(submission.program.nodes.len(), 9, "fixture shape changed");
 
     let outcome =
         verify_and_replay(&challenge, &submission, CutterReplayOptions::default()).unwrap();
