@@ -90,7 +90,16 @@ POST /api/v1/matches/{id}/join         → MatchState
 POST /api/v1/matches/{id}/start        → MatchState
 POST /api/v1/matches/{id}/submissions  → MatchSubmissionAck      (never a score)
 GET  /api/v1/matches/{id}/results      → MatchResults            (409 until close)
+
+POST /api/v1/usage/lessons             → LessonEventAck          (client-asserted, §9)
 ```
+
+`POST /api/v1/usage/lessons` is the one route whose body the service cannot check. The lessons run
+and score in the browser, so there is nothing here to replay against: it records what the client
+reports about a lesson and answers "is the course being used", never "did this learner do it".
+`X-HCR-Player` names the reporter as it does elsewhere and grants nothing. A calibration refit must
+filter on `kind` — a claimed outcome is not a response, and pooling the two would fit item
+difficulty against a mixture of measured and asserted results.
 
 Round endpoints carry two more headers:
 

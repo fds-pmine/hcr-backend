@@ -66,6 +66,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("/api/v1/sessions/<id>/next", "hcr.sessions.next"),
     ("/api/v1/sessions/<id>/responses", "hcr.sessions.respond"),
     ("/api/v1/sessions/<id>/finalize", "hcr.sessions.finalize"),
+    ("/api/v1/usage/lessons", "hcr.usage.lessons"),
     ("/api/v1/time", "hcr.time"),
     ("/api/v1/matches", "hcr.matches.create"),
     ("/api/v1/matches/<id>", "hcr.matches.get"),
@@ -266,7 +267,51 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CORS_ALLOW_HEADERS, matching_origin};
+    use super::{CORS_ALLOW_HEADERS, ROUTES, matching_origin};
+
+    /// Every documented route is registered with the server.
+    ///
+    /// [`ROUTES`] is a second list of the paths [`crate::binding::Router`]
+    /// already serves, and nothing but this test connects the two. A path added
+    /// to the router and forgotten here does not fail a single binding test —
+    /// `Router::dispatch` answers it perfectly — it just 404s on the deployed
+    /// server, because hotaru was never told the path exists. That is a bug you
+    /// find by curling production, which is late.
+    ///
+    /// `01-CONTRACT.md` is the normative route table, so it is what this checks
+    /// against rather than a third copy of the list maintained here.
+    #[test]
+    fn every_documented_route_is_registered_with_the_server() {
+        const CONTRACT: &str = include_str!("../../../docs/01-CONTRACT.md");
+
+        let documented = CONTRACT.lines().filter_map(|line| {
+            let line = line.trim();
+            let rest = line
+                .strip_prefix("GET ")
+                .or_else(|| line.strip_prefix("POST "))?;
+            let path = rest.split_whitespace().next()?;
+            path.starts_with("/api/v1/").then_some(path)
+        });
+
+        for path in documented {
+            assert!(
+                ROUTES.iter().any(|(pattern, _)| covers(pattern, path)),
+                "{path} is in the contract but not in ROUTES, so the server \
+                 would answer it with a 404",
+            );
+        }
+    }
+
+    /// Whether a hotaru pattern serves a documented path. `<id>` and the
+    /// contract's `{id}` are both single-segment wildcards.
+    fn covers(pattern: &str, path: &str) -> bool {
+        let pattern = pattern.split('/');
+        let path = path.split('/');
+        pattern.clone().count() == path.clone().count()
+            && pattern.zip(path).all(|(left, right)| {
+                left.starts_with('<') || right.starts_with('{') || left == right
+            })
+    }
 
     #[test]
     fn cors_allows_every_frontend_submission_header() {

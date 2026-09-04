@@ -20,6 +20,12 @@
 //! anyone can claim any value. Treat it as "probably the same browser", nothing
 //! stronger.
 //!
+//! A fourth kind, `lesson`, answers only the second of those. It is
+//! client-asserted — the lessons never reach the scorer, so there is nothing to
+//! replay them against — and it carries the same identifiers the rest of the log
+//! does plus a lesson id and a section index. No free text, and nothing that
+//! claims to be a measurement. See [`UsageEvent::Lesson`].
+//!
 //! Deliberately absent:
 //!
 //! * **Display names.** Free text a player typed, which is where a real name or
@@ -66,7 +72,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hcr_contract::{ProgramMetrics, ScoreResult, SubmissionResult, TerminalReason};
+use hcr_contract::{
+    LessonActivity, LessonEventCreate, LessonOutcome, ProgramMetrics, ScoreResult,
+    SubmissionResult, TerminalReason,
+};
 use serde::{Deserialize, Serialize};
 
 /// Which editor produced the program a row describes.
@@ -175,6 +184,42 @@ pub enum UsageEvent {
         /// Best completion score in the round.
         top_completion: f64,
     },
+    /// A learner moved through a lesson.
+    ///
+    /// **Client-asserted, and the only row here that is.** The lessons run and
+    /// score in the browser — Cutter Grid is outside server-side scoring by
+    /// design (`docs/08-CUTTER-GRID.md` §0), the servo lessons never needed a
+    /// server — so nothing about the course reached this log at all: it could
+    /// only see submissions, which is the one thing a lesson never does.
+    ///
+    /// What it answers is purpose 2 above, whether the thing gets used and where
+    /// people stop. What it must never be used for is purpose 1: an outcome the
+    /// server did not produce is not an IRT datum, and pooling these with
+    /// `submission` rows would fit item difficulty against a mixture of measured
+    /// and claimed results. Filter on `kind` before any refit.
+    #[serde(rename_all = "camelCase")]
+    Lesson {
+        /// Epoch milliseconds.
+        ts: u64,
+        /// Client-asserted player identifier, when one was supplied.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        player_id: Option<String>,
+        /// Which editor the lesson teaches. Absent means `servo`, as everywhere.
+        #[serde(default, skip_serializing_if = "is_servo")]
+        mode: ProgrammingMode,
+        /// Which lesson, as the frontend catalogue names it.
+        lesson_id: String,
+        /// Zero-based section index within that lesson.
+        section: u32,
+        /// What that section asks for. Absent on whole-lesson outcomes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activity: Option<LessonActivity>,
+        /// What happened.
+        outcome: LessonOutcome,
+        /// Successful Test runs in the lesson so far, as the client counted them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tests: Option<u32>,
+    },
 }
 
 /// Serde needs a path, not a closure, to decide whether to skip a field.
@@ -183,6 +228,37 @@ fn is_servo(mode: &ProgrammingMode) -> bool {
 }
 
 impl UsageEvent {
+    /// Build the lesson event for one reported interaction.
+    ///
+    /// The request is taken whole because every field of it is recorded: there
+    /// is no server-side derivation to do, which is exactly what makes this row
+    /// client-asserted.
+    pub fn from_lesson_event(
+        ts: u64,
+        player_id: Option<String>,
+        request: LessonEventCreate,
+    ) -> Self {
+        let LessonEventCreate {
+            lesson_id,
+            section,
+            activity,
+            outcome,
+            tests,
+            mode,
+        } = request;
+
+        UsageEvent::Lesson {
+            ts,
+            player_id,
+            mode: mode.unwrap_or_default(),
+            lesson_id,
+            section,
+            activity,
+            outcome,
+            tests,
+        }
+    }
+
     /// Build the submission event for a scored result.
     pub fn from_submission(
         ts: u64,

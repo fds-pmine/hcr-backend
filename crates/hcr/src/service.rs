@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use hcr_contract::ScoreResult;
 use hcr_contract::api::{ReplayInfo, ScoreInput};
 use hcr_contract::{
-    ChallengeDefinitionDto, ChallengeSummary, NextItem, ResponseOutcome, SessionRespond,
-    SessionResultDto, SessionSnapshot, SessionStart, SubmissionCreate, SubmissionResult,
-    SubmissionStatus, TerminalReason,
+    ChallengeDefinitionDto, ChallengeSummary, LessonEventAck, LessonEventCreate, NextItem,
+    ResponseOutcome, SessionRespond, SessionResultDto, SessionSnapshot, SessionStart,
+    SubmissionCreate, SubmissionResult, SubmissionStatus, TerminalReason,
 };
 use hcr_contract::{CutterGridPlanRequestV1, CutterGridPlanResponseV1, CutterGridProfileV4};
 use hcr_contract::{
@@ -27,6 +27,20 @@ use crate::itemref::ItemRefSigner;
 use crate::replay::{ENGINE_VERSION, ReplayPool, diverged};
 use crate::rounds::MatchRegistry;
 use crate::session::{SessionRegistry, SessionSpec};
+
+/// Longest accepted lesson id.
+///
+/// Catalogue slugs are `cutter-grid-fixed-axes` and the like; this is roughly
+/// three times the longest one that exists. The endpoint writes what it is given
+/// into a file, so every free field it carries needs a ceiling.
+const LESSON_ID_MAX_BYTES: usize = 64;
+
+/// Highest accepted lesson section index. The longest course has twenty.
+const LESSON_SECTION_MAX: u32 = 200;
+
+/// Highest accepted Test count for one lesson. Above this it is a script, not a
+/// class, and the number is being used to make a row look busy.
+const LESSON_TESTS_MAX: u32 = 10_000;
 
 /// Service-wide configuration.
 #[derive(Debug, Clone)]
@@ -146,6 +160,66 @@ impl HcrService {
         if let Some(log) = &self.usage {
             log.record(&event);
         }
+    }
+
+    /// Record one client-reported lesson interaction.
+    ///
+    /// The lessons are a frontend artifact: this service has no lesson
+    /// catalogue, replays nothing and scores nothing here, so there is no way to
+    /// check that the reported lesson exists or that any of it happened. What it
+    /// can do is refuse to write a row that is not the shape of a lesson event —
+    /// the endpoint appends to a file and needs no authentication, so the bounds
+    /// below are the whole defence, and they are deliberately tight.
+    ///
+    /// Returns `recorded: false` when the deployment collects no usage, which is
+    /// the default and not an error.
+    pub fn record_lesson_event(
+        &self,
+        request: LessonEventCreate,
+        player_id: Option<&str>,
+    ) -> ServiceResult<LessonEventAck> {
+        let id = request.lesson_id.as_str();
+        if id.is_empty() || id.len() > LESSON_ID_MAX_BYTES {
+            return Err(ServiceError::ProgramInvalid {
+                message: format!(
+                    "A lesson id must be 1 to {LESSON_ID_MAX_BYTES} characters, not {}.",
+                    id.len()
+                ),
+                field: Some("lessonId".to_string()),
+            });
+        }
+        if !id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(ServiceError::ProgramInvalid {
+                message: "A lesson id is a catalogue slug: lower-case letters, digits and hyphens."
+                    .to_string(),
+                field: Some("lessonId".to_string()),
+            });
+        }
+        if request.section > LESSON_SECTION_MAX {
+            return Err(ServiceError::ProgramInvalid {
+                message: format!("A lesson section index must not exceed {LESSON_SECTION_MAX}."),
+                field: Some("section".to_string()),
+            });
+        }
+        if request.tests.is_some_and(|tests| tests > LESSON_TESTS_MAX) {
+            return Err(ServiceError::ProgramInvalid {
+                message: format!("A lesson test count must not exceed {LESSON_TESTS_MAX}."),
+                field: Some("tests".to_string()),
+            });
+        }
+
+        if self.usage.is_none() {
+            return Ok(LessonEventAck { recorded: false });
+        }
+        self.record(crate::usage::UsageEvent::from_lesson_event(
+            self.now(),
+            player_id.map(str::to_owned),
+            request,
+        ));
+        Ok(LessonEventAck { recorded: true })
     }
 
     /// The catalog store.

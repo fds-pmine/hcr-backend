@@ -223,8 +223,24 @@ rate limiting in front of it — can be walked around by hitting the IP directly
 2. **Whether the thing gets used** — rounds played, programs written, where
    people stop.
 
-Three event kinds: `submission`, `sessionResponse`, `matchResults`. The full
-schema, and the reasoning, is in `crates/hcr/src/usage.rs`.
+Four event kinds: `submission`, `sessionResponse`, `matchResults` and `lesson`.
+The full schema, and the reasoning, is in `crates/hcr/src/usage.rs`.
+
+The first three are the server's own account of work it did. **`lesson` is not:**
+the lessons run and score entirely in the browser, so those rows carry what a
+client reported and the service can verify none of it. They exist because the
+course was otherwise invisible here — a lesson never submits, so a log that only
+saw submissions saw nothing of the thing most people actually use. Read them for
+purpose 2 above and filter them out for purpose 1:
+
+```sh
+# Usage: where do people stop?
+jq -r 'select(.kind=="lesson") | [.lessonId, .section, .outcome] | @tsv' \
+  /var/lib/hcr/usage.jsonl | sort | uniq -c | sort -rn | head
+
+# Calibration input: server-scored responses only, never lesson rows.
+jq -c 'select(.kind=="submission")' /var/lib/hcr/usage.jsonl
+```
 
 **Not recorded**, deliberately:
 

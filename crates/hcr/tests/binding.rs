@@ -515,3 +515,50 @@ async fn the_time_endpoint_reports_the_server_clock() {
     let sync: TimeSync = reply.json().expect("time");
     assert!(sync.server_time > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Lesson telemetry
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_lesson_event_is_accepted_and_acknowledged() {
+    let reply = router()
+        .dispatch(
+            HttpCall::post(
+                "/api/v1/usage/lessons",
+                LessonEventCreate {
+                    lesson_id: "cutter-grid-fixed-axes".to_string(),
+                    section: 11,
+                    activity: Some(LessonActivity::Observe),
+                    outcome: LessonOutcome::SectionPassed,
+                    tests: Some(2),
+                    mode: Some(ProgrammingMode::CutterGrid),
+                },
+            )
+            .as_player("u-1"),
+        )
+        .await;
+
+    assert_eq!(reply.status, 200);
+    let ack: LessonEventAck = reply.json().expect("ack");
+    // This router has no usage log, which is the default everywhere: accepted,
+    // and honest about having recorded nothing.
+    assert!(!ack.recorded);
+}
+
+#[tokio::test]
+async fn an_oversized_lesson_event_is_refused_before_it_is_parsed() {
+    // Unauthenticated and append-only: the size cap is what stops the body from
+    // being whatever the caller felt like sending.
+    let body = serde_json::json!({
+        "lessonId": "cutter-grid-fixed-axes",
+        "section": 1,
+        "outcome": "opened",
+        "padding": "x".repeat(4096),
+    });
+    let reply = router()
+        .dispatch(HttpCall::post("/api/v1/usage/lessons", body))
+        .await;
+
+    assert_eq!(reply.status, 422);
+}

@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use hcr_contract::api::ScoreInput;
 use hcr_contract::{
-    CutterGridPlanRequestV1, HcrErrorCode, MatchConfig, SessionRespond, SessionStart,
-    SubmissionCreate,
+    CutterGridPlanRequestV1, HcrErrorCode, LessonEventCreate, MatchConfig, SessionRespond,
+    SessionStart, SubmissionCreate,
 };
 use serde::Serialize;
 
@@ -40,6 +40,12 @@ pub enum Method {
 /// Maximum accepted compact-program request size. A V4 program carries source
 /// blocks only; dense plans and Profiles are never client input.
 pub const CUTTER_GRID_PLAN_REQUEST_MAX_BYTES: usize = 64 * 1024;
+
+/// Maximum accepted lesson-event size.
+///
+/// A lesson event is an id, two small numbers and two enums. Anything larger is
+/// not one, and this endpoint needs no authentication to append to a file.
+pub const LESSON_EVENT_REQUEST_MAX_BYTES: usize = 2 * 1024;
 
 /// An inbound request, already stripped of transport concerns.
 #[derive(Debug, Clone)]
@@ -262,6 +268,26 @@ impl Router {
                 ))
             }
             (Method::Get, ["submissions", id]) => Ok(HttpReply::ok(&service.get_submission(id)?)),
+
+            // -- lesson telemetry, client-asserted --
+            (Method::Post, ["usage", "lessons"]) => {
+                if call.body.len() > LESSON_EVENT_REQUEST_MAX_BYTES {
+                    return Err(ServiceError::ProgramInvalid {
+                        message: format!(
+                            "Lesson events must not exceed {LESSON_EVENT_REQUEST_MAX_BYTES} bytes."
+                        ),
+                        field: None,
+                    });
+                }
+                let request: LessonEventCreate = decode(&call.body)?;
+                // The player travels in the header for the same reason it does
+                // on a submission: a body that could name the player could name
+                // somebody else's. It grants nothing either way — this endpoint
+                // records a claim and returns an acknowledgement.
+                Ok(HttpReply::ok(
+                    &service.record_lesson_event(request, call.player_id.as_deref())?,
+                ))
+            }
 
             // -- adaptive sessions --
             (Method::Post, ["sessions"]) => {

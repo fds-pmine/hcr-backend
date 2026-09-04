@@ -859,3 +859,51 @@ pub struct DeviceAck {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<HcrError>,
 }
+
+// ---------------------------------------------------------------------------
+// 9. Lesson telemetry (HTTP only)
+// ---------------------------------------------------------------------------
+//
+// Client-asserted usage rows for the browser-side lessons. The server verifies
+// none of it; the calibration datum remains `SubmissionCreate`.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LessonActivity {
+    Read,
+    Predict,
+    Build,
+    Observe,
+    Challenge,
+    Recap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LessonOutcome {
+    Opened,
+    SectionPassed,
+    QuizPassed,
+    Completed,
+    Abandoned,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LessonEventCreate {
+    pub lesson_id: String,
+    pub section: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<LessonActivity>,
+    pub outcome: LessonOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tests: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ProgrammingMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LessonEventAck {
+    pub recorded: bool,
+}

@@ -816,3 +816,127 @@ async fn the_idempotency_store_is_bounded() {
         fresh.score.completion_score
     });
 }
+
+// ---------------------------------------------------------------------------
+// Lesson telemetry
+// ---------------------------------------------------------------------------
+
+fn lesson_event(lesson_id: &str, section: u32, outcome: LessonOutcome) -> LessonEventCreate {
+    LessonEventCreate {
+        lesson_id: lesson_id.to_string(),
+        section,
+        activity: Some(LessonActivity::Observe),
+        outcome,
+        tests: Some(3),
+        mode: Some(ProgrammingMode::CutterGrid),
+    }
+}
+
+#[tokio::test]
+async fn a_lesson_event_is_recorded_as_its_own_kind() {
+    let dir = std::env::temp_dir().join(format!("hcr-usage-lesson-{}", std::process::id()));
+    let path = dir.join("usage.jsonl");
+    let _ = std::fs::remove_file(&path);
+
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"usage-key"),
+        ServiceConfig::default(),
+    )
+    .with_usage_log(Arc::new(UsageLog::open(&path).expect("open log")));
+
+    let ack = service
+        .record_lesson_event(
+            lesson_event("cutter-grid-fixed-axes", 11, LessonOutcome::SectionPassed),
+            Some("u-8f21"),
+        )
+        .expect("accepted");
+    assert!(ack.recorded);
+
+    let line = std::fs::read_to_string(&path).expect("log written");
+    let event: serde_json::Value = serde_json::from_str(line.trim()).expect("one json line");
+
+    // `kind` is what keeps a claimed outcome out of a calibration refit: these
+    // rows say what a browser reported, and a `submission` row says what the
+    // server replayed. Pooling them would fit difficulty against a mixture.
+    assert_eq!(event["kind"], "lesson");
+    assert_eq!(event["lessonId"], "cutter-grid-fixed-axes");
+    assert_eq!(event["section"], 11);
+    assert_eq!(event["activity"], "observe");
+    assert_eq!(event["outcome"], "section-passed");
+    assert_eq!(event["mode"], "cutter-grid");
+    assert_eq!(event["playerId"], "u-8f21");
+    // Nothing about a score: the lessons are not scored by this service, and a
+    // row that carried one would be claiming they were.
+    assert!(event.get("completionScore").is_none(), "{event}");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn a_lesson_event_that_is_not_the_shape_of_one_is_refused() {
+    // The endpoint appends to a file and needs no authentication, so shape is
+    // the whole defence: there is no lesson catalogue here to check membership
+    // against, and an unbounded field would go straight into the log.
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"usage-key"),
+        ServiceConfig::default(),
+    );
+
+    for (case, request) in [
+        ("empty id", lesson_event("", 1, LessonOutcome::Opened)),
+        (
+            "oversized id",
+            lesson_event(&"x".repeat(65), 1, LessonOutcome::Opened),
+        ),
+        (
+            "id that is not a slug",
+            lesson_event("../../etc/passwd", 1, LessonOutcome::Opened),
+        ),
+        (
+            "section past any course",
+            lesson_event("cutter-grid-fixed-axes", 5_000, LessonOutcome::Opened),
+        ),
+    ] {
+        let error = service
+            .record_lesson_event(request, Some("u-1"))
+            .expect_err(case);
+        assert!(
+            matches!(error, ServiceError::ProgramInvalid { .. }),
+            "{case}: {error:?}"
+        );
+    }
+
+    let mut busy = lesson_event("cutter-grid-fixed-axes", 1, LessonOutcome::Completed);
+    busy.tests = Some(1_000_000);
+    assert!(service.record_lesson_event(busy, Some("u-1")).is_err());
+}
+
+#[tokio::test]
+async fn a_lesson_event_says_so_when_the_deployment_collects_nothing() {
+    // Collection is off by default, and a client that cannot tell the log is off
+    // from the log being broken would have no way to report either.
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"usage-key"),
+        ServiceConfig::default(),
+    );
+
+    let ack = service
+        .record_lesson_event(
+            lesson_event("cutter-grid-distance", 4, LessonOutcome::QuizPassed),
+            None,
+        )
+        .expect("accepted");
+    assert!(!ack.recorded);
+}

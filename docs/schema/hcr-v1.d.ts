@@ -857,3 +857,52 @@ export interface DeviceProvider {
   estop(deviceId: string, reason: string): Promise<DeviceAck>;
   subscribeTelemetry(deviceId: string, onSample: (t: DeviceTelemetry) => void): () => void;
 }
+
+// ---------------------------------------------------------------------------
+// 9. Lesson telemetry (HTTP only)
+// ---------------------------------------------------------------------------
+//
+// The lessons run and score entirely in the browser: Cutter Grid is deliberately
+// outside server-side scoring (`08-CUTTER-GRID.md` §0) and the servo lessons never
+// needed a server either. Nothing about them reached the usage log, so "are the
+// lessons being used, and where do people stop" had no answer at all — the log
+// could only see the one thing lessons never do, which is submit.
+//
+// These rows are CLIENT-ASSERTED. The server records what the browser reports and
+// verifies none of it: anyone can post a row claiming they finished a lesson they
+// never opened. Read them as usage, never as attainment. The calibration datum is
+// still `SubmissionCreate` → a `submission` row, which the server replays itself.
+//
+// Deliberately absent from §7's message map: this is a browser-to-API call, and
+// nothing on the MQTT side has lessons.
+
+export type LessonActivity =
+  | 'read' | 'predict' | 'build' | 'observe' | 'challenge' | 'recap';
+
+export type LessonOutcome =
+  /** A lesson was opened. `section` is where it resumed, which need not be 0. */
+  | 'opened'
+  /** A section's own gate was met and the learner moved past it. */
+  | 'section-passed'
+  /** The closed-book quiz was answered correctly. */
+  | 'quiz-passed'
+  /** Quiz and practical both passed: the lesson is finished. */
+  | 'completed'
+  /** The learner left before finishing. `section` is where they stopped. */
+  | 'abandoned';
+
+export interface LessonEventCreate {
+  /** As the frontend catalogue names it; the server holds no lesson catalogue. */
+  lessonId: string;
+  /** Zero-based section index within that lesson. */
+  section: number;
+  /** What that section asks of the learner. Absent on whole-lesson outcomes. */
+  activity?: LessonActivity;
+  outcome: LessonOutcome;
+  /** Successful Test runs in this lesson so far — reported effort, not verified. */
+  tests?: number;
+  /** Which editor the lesson teaches. Absent means `servo`. */
+  mode?: ProgrammingMode;
+}
+
+export interface LessonEventAck { recorded: boolean }

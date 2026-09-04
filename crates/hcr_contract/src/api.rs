@@ -314,3 +314,84 @@ pub struct SessionResultDto {
     /// Per-item history.
     pub items: Vec<SessionItemRecord>,
 }
+
+/// What a lesson section asks of the learner.
+///
+/// The same six kinds the lesson cards print, so a row can be grouped by the
+/// activity rather than only by position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LessonActivity {
+    /// Read an explanation.
+    Read,
+    /// Predict an outcome before running anything.
+    Predict,
+    /// Build a program.
+    Build,
+    /// Watch what the arm does.
+    Observe,
+    /// A drill: repair or change a route that is already on the canvas.
+    Challenge,
+    /// Recap of what the lesson established.
+    Recap,
+}
+
+/// What happened in a lesson.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LessonOutcome {
+    /// It was opened. `section` is where it resumed, which need not be 0.
+    Opened,
+    /// A section's own gate was met and the learner moved past it.
+    SectionPassed,
+    /// The closed-book quiz was answered correctly.
+    QuizPassed,
+    /// Quiz and practical both passed.
+    Completed,
+    /// The learner left before finishing; `section` is where they stopped.
+    Abandoned,
+}
+
+/// One thing a learner did in a lesson.
+///
+/// **Client-asserted.** The lessons run and score in the browser — Cutter Grid is
+/// outside server-side scoring by design (`docs/08-CUTTER-GRID.md` §0) and the
+/// servo lessons never needed a server — so the service records what the client
+/// reports and can verify none of it. It answers "are the lessons used, and where
+/// do people stop"; it is not evidence of attainment, and nothing calibrates
+/// against it. That remains [`SubmissionCreate`], which the server replays.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LessonEventCreate {
+    /// Which lesson, as the frontend catalogue names it (`cutter-grid-…`).
+    ///
+    /// The server holds no lesson catalogue — lessons are a frontend artifact —
+    /// so this is checked for shape and length, not membership.
+    pub lesson_id: String,
+    /// Zero-based section index within that lesson.
+    pub section: u32,
+    /// What that section asks for. Absent on whole-lesson outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<LessonActivity>,
+    /// What happened.
+    pub outcome: LessonOutcome,
+    /// Successful Test runs in this lesson so far. Reported effort, not verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<u32>,
+    /// Which editor the lesson teaches. Absent means `servo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ProgrammingMode>,
+}
+
+/// Acknowledgement for a recorded lesson event.
+///
+/// `recorded` is false when the deployment collects no usage at all, which is
+/// the default. The client does nothing either way — it is fire-and-forget — but
+/// a false here is how an operator checking by hand learns the log is off rather
+/// than broken.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LessonEventAck {
+    /// Whether a row reached the usage log.
+    pub recorded: bool,
+}

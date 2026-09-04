@@ -27,9 +27,10 @@ pub use round::{
 };
 
 pub use api::{
-    ChallengeSummary, ClientPreview, NextItem, ReplayInfo, ResponseOutcome, SessionItemRecord,
-    SessionLifecycle, SessionRespond, SessionResultDto, SessionSnapshot, SessionStart,
-    SubmissionCreate, SubmissionResult, SubmissionStatus,
+    ChallengeSummary, ClientPreview, LessonActivity, LessonEventAck, LessonEventCreate,
+    LessonOutcome, NextItem, ReplayInfo, ResponseOutcome, SessionItemRecord, SessionLifecycle,
+    SessionRespond, SessionResultDto, SessionSnapshot, SessionStart, SubmissionCreate,
+    SubmissionResult, SubmissionStatus,
 };
 pub use catalog::{
     CalibrationState, ChallengeDefinitionDto, ChallengeMeta, GeneratorProvenance, ItemId,
