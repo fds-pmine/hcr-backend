@@ -665,6 +665,55 @@ impl HcrService {
         self.matches.create(config, challenge)
     }
 
+    /// Reopen a finished round on a different challenge, keeping the roster.
+    ///
+    /// The challenge is chosen the same way `create_match` chooses an unpinned
+    /// one, then rejected if it is the one the room just played: a rematch that
+    /// served the same hairstyle again would be a memory test, and
+    /// `pick_for_match` is deterministic, so without the check it would serve
+    /// exactly that every time. A catalog holding a single playable item cannot
+    /// satisfy that and says so rather than silently repeating itself.
+    pub fn rematch(&self, match_id: &str) -> ServiceResult<MatchState> {
+        let state = self.matches.state(match_id)?;
+        let mode = state.config.programming_mode;
+        let played = self.matches.played_challenges(match_id)?;
+
+        // Everything this room has already played is refused, so a session
+        // works through the bank instead of flipping between two items. When
+        // the bank runs out the rotation starts again, still refusing an
+        // immediate repeat — a room that has played everything should carry on
+        // rather than stop.
+        let (challenge_id, version, wrapped) =
+            match self.catalog.pick_for_match_excluding(mode, &played) {
+                Ok((challenge_id, version)) => (challenge_id, version, false),
+                Err(ServiceError::BankExhausted) => {
+                    let last = played.last().cloned().into_iter().collect::<Vec<_>>();
+                    let (challenge_id, version) =
+                        self.catalog.pick_for_match_excluding(mode, &last)?;
+                    (challenge_id, version, true)
+                }
+                Err(other) => return Err(other),
+            };
+
+        self.matches.rematch(
+            match_id,
+            MatchChallengeRef {
+                challenge_id,
+                version,
+            },
+            wrapped,
+        )
+    }
+
+    /// Put the room's players into crews. Lobby only.
+    pub fn set_match_crews(
+        &self,
+        match_id: &str,
+        crews: &std::collections::HashMap<String, String>,
+    ) -> ServiceResult<MatchState> {
+        self.matches.set_crews(match_id, crews)
+    }
+
     /// Join a round's lobby.
     pub fn join_match(
         &self,

@@ -161,6 +161,28 @@ impl CatalogStore {
     /// unpinned round lands on an authored, human-checked challenge rather than
     /// on whichever generated id happened to sort first.
     pub fn pick_for_match(&self, mode: ProgrammingMode) -> ServiceResult<(String, u32)> {
+        self.pick_excluding(mode, &[])
+    }
+
+    /// The same choice, refusing a set of challenges.
+    ///
+    /// Used by a rematch, which passes everything the room has already played:
+    /// the picker is deterministic, so refusing only the last one would
+    /// alternate between two items for ever rather than working through the
+    /// bank.
+    pub fn pick_for_match_excluding(
+        &self,
+        mode: ProgrammingMode,
+        exclude: &[String],
+    ) -> ServiceResult<(String, u32)> {
+        self.pick_excluding(mode, exclude)
+    }
+
+    fn pick_excluding(
+        &self,
+        mode: ProgrammingMode,
+        exclude: &[String],
+    ) -> ServiceResult<(String, u32)> {
         let inner = self
             .inner
             .read()
@@ -175,6 +197,7 @@ impl CatalogStore {
             // cannot be played in it. Serving one anyway would open a round on a
             // challenge nobody in it could attempt.
             .filter(|dto| dto.meta.supports(mode))
+            .filter(|dto| !exclude.contains(&dto.challenge.id))
             .min_by(|a, b| {
                 a.meta
                     .generator

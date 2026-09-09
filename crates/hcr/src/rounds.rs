@@ -76,6 +76,13 @@ struct Room {
     last_submit_at: HashMap<String, u64>,
     /// Server time of the last operation on this room, for eviction.
     last_seen: u64,
+    /// Every challenge this room has played, oldest first.
+    ///
+    /// A rematch that refused only the challenge just played would alternate
+    /// between two items for ever, because the picker is deterministic: from A
+    /// it takes B, and from B it takes A again. Remembering the whole room's
+    /// history turns four presses into four hairstyles.
+    played: Vec<String>,
 }
 
 impl Room {
@@ -188,6 +195,7 @@ impl MatchRegistry {
             }
         };
 
+        let challenge_id = challenge.challenge_id.clone();
         let room = Room {
             state: MatchState {
                 match_id: match_id.clone(),
@@ -203,6 +211,7 @@ impl MatchRegistry {
             entries: HashMap::new(),
             last_submit_at: HashMap::new(),
             last_seen: now,
+            played: vec![challenge_id],
         };
 
         let state = room.public_state(now);
@@ -239,8 +248,112 @@ impl MatchRegistry {
                 display_name: display_name.to_string(),
                 connected: true,
                 submitted: false,
+                // Rejoining keeps the crew somebody put you in; a fresh player
+                // is undealt until the room's clients draw or an instructor
+                // assigns.
+                crew: room.players.get(player_id).and_then(|player| player.crew.clone()),
             },
         );
+        Ok(room.public_state(now))
+    }
+
+    /// Reopen a finished round for another go, keeping the room and its roster.
+    ///
+    /// Without this, a second round means a second room, and a second room means
+    /// a new six-character code that every player retypes. In a classroom that
+    /// is a minute of dead air per round and the reason a session runs three
+    /// rounds instead of eight.
+    ///
+    /// What is kept is the room code and who is in it. What is cleared is every
+    /// trace of the round that just ended — the standings, the rate-limit
+    /// clocks, and each player's submitted flag — because a rematch that
+    /// inherited entries would rank the previous round's programs against the
+    /// new challenge. The challenge itself is replaced, so the roster cannot
+    /// simply replay what it already knows.
+    ///
+    /// Only a finished round can be reopened. A lobby is already open, and
+    /// reopening a running one would erase submissions from under the players
+    /// who made them.
+    /// Which challenges this room has already played, oldest first.
+    pub fn played_challenges(&self, match_id: &str) -> ServiceResult<Vec<String>> {
+        let rooms = self.lock()?;
+        rooms
+            .get(match_id)
+            .map(|room| room.played.clone())
+            .ok_or_else(|| ServiceError::SessionNotFound(match_id.to_string()))
+    }
+
+    pub fn rematch(
+        &self,
+        match_id: &str,
+        challenge: MatchChallengeRef,
+        wrapped: bool,
+    ) -> ServiceResult<MatchState> {
+        let now = self.clock.now_ms();
+        let mut rooms = self.lock()?;
+        let room = rooms
+            .get_mut(match_id)
+            .ok_or_else(|| ServiceError::SessionNotFound(match_id.to_string()))?;
+
+        room.settle(now);
+        if room.state.phase != MatchPhase::Results {
+            return Err(ServiceError::SessionTerminated);
+        }
+
+        room.state.phase = MatchPhase::Lobby;
+        room.state.opens_at = None;
+        room.state.closes_at = None;
+        // The bank ran out and the rotation started over, so the history it was
+        // keeping is spent.
+        if wrapped {
+            room.played.clear();
+        }
+        room.played.push(challenge.challenge_id.clone());
+        room.challenge = challenge;
+        room.entries.clear();
+        room.last_submit_at.clear();
+        for player in room.players.values_mut() {
+            player.submitted = false;
+        }
+
+        Ok(room.public_state(now))
+    }
+
+    /// Put players into crews, replacing whatever was set before.
+    ///
+    /// Lobby only. Re-teaming a room mid-round would change what a crew total
+    /// means halfway through the thing it is totalling, and re-teaming after
+    /// the deadline would let somebody pick the winning crew once the scores
+    /// were in.
+    ///
+    /// Takes no player header, exactly like `start`: the room code is the whole
+    /// permission model here, and the lobby says so. That is a real limitation
+    /// rather than an oversight — a client holding the code can re-team the
+    /// room — and it is why the crew a client *draws* for itself is the default
+    /// and this is the override.
+    ///
+    /// A player id that is not in the room is ignored rather than refused: a
+    /// roster that changed between reading it and posting it should not make
+    /// the whole assignment fail.
+    pub fn set_crews(
+        &self,
+        match_id: &str,
+        crews: &HashMap<String, String>,
+    ) -> ServiceResult<MatchState> {
+        let now = self.clock.now_ms();
+        let mut rooms = self.lock()?;
+        let room = rooms
+            .get_mut(match_id)
+            .ok_or_else(|| ServiceError::SessionNotFound(match_id.to_string()))?;
+
+        room.last_seen = now;
+        if room.state.phase != MatchPhase::Lobby {
+            return Err(ServiceError::SessionTerminated);
+        }
+
+        for (player_id, player) in room.players.iter_mut() {
+            player.crew = crews.get(player_id).cloned();
+        }
         Ok(room.public_state(now))
     }
 

@@ -123,6 +123,7 @@ fn round_config(mode: ProgrammingMode) -> MatchConfig {
             version: 1,
         }),
         programming_mode: mode,
+        ..MatchConfig::default()
     }
 }
 

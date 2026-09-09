@@ -22,6 +22,8 @@ Program IR, Provider, or Score Result (SPEC v0.3 §15).
 | [`06-MULTIPLAYER.md`](06-MULTIPLAYER.md) | Competitive rounds, fairness controls, server-clock deadlines, lag handling, and grading |
 | [`07-CALIBRATION.md`](07-CALIBRATION.md) | A shared difficulty scale, mode offsets, linking items, anchor persons, and competitive ability |
 | [`08-CUTTER-GRID.md`](08-CUTTER-GRID.md) | Cutter Grid verification, server-derived data, the trust boundary, and challenge signatures |
+| [`09-PAPER-BASELINE.md`](09-PAPER-BASELINE.md) | Criteria from the robotic-haircutting literature, the two-tier conformance suite that measures against them, the transport gap, and the publication target |
+| [`10-PB-ARCH-01-PLAN.md`](10-PB-ARCH-01-PLAN.md) | The staged plan for typing the MQTT topic grammar and the transport/safety chain it unblocks: chosen design, rejected alternatives, per-stage tests, and the upstream blocker that stops the chain after stage 1 |
 | [`schema/hcr-v1.d.ts`](schema/hcr-v1.d.ts) | **Normative** type definitions (TypeScript; the frontend can adopt directly) |
 | [`schema/hcr_v1.rs`](schema/hcr_v1.rs) | Rust DTO mirror of the same schema |
 

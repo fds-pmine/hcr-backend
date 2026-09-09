@@ -41,6 +41,33 @@ fn service_at(clock: &ManualClock, idle_timeout_ms: u64) -> HcrService {
     )
 }
 
+/// A service whose catalog holds exactly the named challenges.
+fn service_with_catalog(clock: &ManualClock, ids: &[&str]) -> HcrService {
+    let catalog = Arc::new(CatalogStore::new());
+    for (index, id) in ids.iter().enumerate() {
+        catalog.insert(challenge(id, 1, index as f64 - 1.0)).unwrap();
+    }
+
+    HcrService::with_clock(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"round-test-key"),
+        ServiceConfig {
+            session: SessionConfig {
+                min_items: 2,
+                max_items: 3,
+                ..SessionConfig::default()
+            },
+            blueprint: Blueprint::unconstrained(),
+            exposure: ExposureController::unlimited(),
+            seed: 7,
+            session_idle_timeout_ms: 600_000,
+            ..ServiceConfig::default()
+        },
+        Arc::new(clock.clone()),
+    )
+}
+
 fn config(duration_ms: u64) -> MatchConfig {
     MatchConfig {
         duration_ms,
@@ -52,6 +79,9 @@ fn config(duration_ms: u64) -> MatchConfig {
             version: 1,
         }),
         programming_mode: ProgrammingMode::Servo,
+        // The round settings this suite is not about; a struct literal keeps
+        // the compiler honest when the contract grows.
+        ..MatchConfig::default()
     }
 }
 
@@ -260,6 +290,242 @@ async fn results_become_available_once_the_deadline_passes() {
     assert_eq!(results.rows[0].player_id, "alice");
     // Published so a disputed deadline decision is checkable afterwards.
     assert_eq!(results.rows[0].server_received_at, Some(T0));
+}
+
+#[tokio::test]
+async fn a_rematch_keeps_the_room_and_its_roster_and_clears_the_last_round() {
+    // The point of the whole feature: twenty students do not retype a new
+    // six-character code between rounds.
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    service.join_match(&state.match_id, "bob", "Bob").unwrap();
+    service.start_match(&state.match_id).unwrap();
+    let first_challenge = service.match_challenge(&state.match_id).unwrap();
+
+    service
+        .submit_to_match(
+            &state.match_id,
+            "alice",
+            submission("sub-1", &first_challenge.challenge.id, 1, safe_program()),
+        )
+        .await
+        .unwrap();
+    clock.advance(60_001);
+    assert_eq!(
+        service.match_results(&state.match_id).unwrap().rows.len(),
+        2
+    );
+
+    let reopened = service.rematch(&state.match_id).unwrap();
+
+    assert_eq!(reopened.match_id, state.match_id, "the code must survive");
+    assert_eq!(reopened.phase, MatchPhase::Lobby);
+    assert!(reopened.opens_at.is_none() && reopened.closes_at.is_none());
+    assert_eq!(reopened.players.len(), 2, "the roster must survive");
+    assert!(
+        reopened.players.iter().all(|player| !player.submitted),
+        "a player carrying last round's submitted flag would look done before starting",
+    );
+    // Standings are gone: they belonged to the round that ended.
+    assert!(service.match_results(&state.match_id).is_err());
+
+    service.start_match(&state.match_id).unwrap();
+    let second_challenge = service.match_challenge(&state.match_id).unwrap();
+    assert_ne!(
+        second_challenge.challenge.id, first_challenge.challenge.id,
+        "reopening on the same challenge would make round two a memory test",
+    );
+}
+
+#[tokio::test]
+async fn repeated_rematches_work_through_the_bank_before_repeating() {
+    // Refusing only the challenge just played would alternate between two
+    // items for ever, because the picker is deterministic.
+    let clock = ManualClock::new(T0);
+    // The shared fixture holds two challenges; a third makes the difference
+    // between flipping and rotating observable.
+    let service = service_with_catalog(&clock, &["easy", "hard", "medium"]);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        service.start_match(&state.match_id).unwrap();
+        seen.push(
+            service
+                .match_challenge(&state.match_id)
+                .unwrap()
+                .challenge
+                .id
+                .clone(),
+        );
+        clock.advance(60_001);
+        service.match_results(&state.match_id).unwrap();
+        service.rematch(&state.match_id).unwrap();
+    }
+
+    let mut distinct = seen.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "four rounds over a three-item bank served {seen:?} — flipping, not rotating",
+    );
+    // The fourth round is where the bank wraps; it must not repeat the third.
+    assert_ne!(seen[0], seen[1]);
+    assert_ne!(seen[1], seen[2]);
+    assert_ne!(seen[2], seen[3]);
+}
+
+#[tokio::test]
+async fn a_room_that_has_played_everything_keeps_going() {
+    // A bank with one playable item cannot avoid a repeat, and a session that
+    // stopped dead at that point would be worse than one that repeats.
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+
+    for _ in 0..8 {
+        service.start_match(&state.match_id).unwrap();
+        clock.advance(60_001);
+        service.match_results(&state.match_id).unwrap();
+        service
+            .rematch(&state.match_id)
+            .expect("a reopened room must keep working once the bank wraps");
+    }
+}
+
+#[tokio::test]
+async fn crews_are_set_in_the_lobby_and_published_to_everybody() {
+    // The whole point: a crew a student can see on their own screen, rather
+    // than a letter living in one browser's memory.
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    service.join_match(&state.match_id, "bob", "Bob").unwrap();
+    service.join_match(&state.match_id, "cy", "Cy").unwrap();
+
+    let crews = std::collections::HashMap::from([
+        ("alice".to_string(), "A".to_string()),
+        ("bob".to_string(), "A".to_string()),
+    ]);
+    let assigned = service.set_match_crews(&state.match_id, &crews).unwrap();
+
+    let crew_of = |state: &MatchState, id: &str| {
+        state
+            .players
+            .iter()
+            .find(|player| player.player_id == id)
+            .and_then(|player| player.crew.clone())
+    };
+    assert_eq!(crew_of(&assigned, "alice").as_deref(), Some("A"));
+    assert_eq!(crew_of(&assigned, "bob").as_deref(), Some("A"));
+    // Absent from the map means un-crewed, not unchanged.
+    assert_eq!(crew_of(&assigned, "cy"), None);
+
+    // Every reader sees it, which is the difference from the old per-browser map.
+    let seen = service.match_state(&state.match_id).unwrap();
+    assert_eq!(crew_of(&seen, "alice").as_deref(), Some("A"));
+
+    // And it survives into the round.
+    service.start_match(&state.match_id).unwrap();
+    let running = service.match_state(&state.match_id).unwrap();
+    assert_eq!(crew_of(&running, "bob").as_deref(), Some("A"));
+}
+
+#[tokio::test]
+async fn crews_cannot_be_changed_once_the_round_is_under_way() {
+    // Re-teaming mid-round changes what a crew total means halfway through the
+    // thing it is totalling; re-teaming after the deadline would let somebody
+    // pick the winning crew with the scores already in.
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    let crews = std::collections::HashMap::from([("alice".to_string(), "B".to_string())]);
+
+    service.set_match_crews(&state.match_id, &crews).unwrap();
+    service.start_match(&state.match_id).unwrap();
+    assert!(service.set_match_crews(&state.match_id, &crews).is_err());
+
+    clock.advance(60_001);
+    service.match_results(&state.match_id).unwrap();
+    assert!(service.set_match_crews(&state.match_id, &crews).is_err());
+
+    // Reopening puts the room back in a lobby, so the next round can be re-teamed.
+    service.rematch(&state.match_id).unwrap();
+    assert!(service.set_match_crews(&state.match_id, &crews).is_ok());
+}
+
+#[tokio::test]
+async fn a_rejoining_player_keeps_the_crew_they_were_put_in() {
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    service
+        .set_match_crews(
+            &state.match_id,
+            &std::collections::HashMap::from([("alice".to_string(), "C".to_string())]),
+        )
+        .unwrap();
+
+    // A reload re-joins with the same identity; losing the crew would silently
+    // undo an assignment the room can see.
+    let rejoined = service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    assert_eq!(
+        rejoined
+            .players
+            .iter()
+            .find(|player| player.player_id == "alice")
+            .and_then(|player| player.crew.clone())
+            .as_deref(),
+        Some("C"),
+    );
+}
+
+#[tokio::test]
+async fn only_a_finished_round_can_be_reopened() {
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+
+    // A lobby is already open.
+    assert!(service.rematch(&state.match_id).is_err());
+
+    // Reopening a running round would erase submissions from under the players
+    // who made them.
+    service.start_match(&state.match_id).unwrap();
+    assert!(service.rematch(&state.match_id).is_err());
+
+    clock.advance(60_001);
+    assert!(service.match_results(&state.match_id).is_ok());
+    assert!(service.rematch(&state.match_id).is_ok());
+}
+
+#[tokio::test]
+async fn a_reopened_round_accepts_a_late_joiner() {
+    // The reason to reopen rather than to keep the roster frozen: somebody who
+    // missed round one can be in round two without a new room.
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    service.start_match(&state.match_id).unwrap();
+    assert!(service.join_match(&state.match_id, "bob", "Bob").is_err());
+
+    clock.advance(60_001);
+    service.match_results(&state.match_id).unwrap();
+    service.rematch(&state.match_id).unwrap();
+
+    let joined = service.join_match(&state.match_id, "bob", "Bob").unwrap();
+    assert_eq!(joined.players.len(), 2);
 }
 
 #[tokio::test]

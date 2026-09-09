@@ -23,7 +23,7 @@ use hcr_contract::{
     CutterGridPlanRequestV1, HcrErrorCode, LessonEventCreate, MatchConfig, SessionRespond,
     SessionStart, SubmissionCreate,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{ServiceError, ServiceResult};
 use crate::service::HcrService;
@@ -339,6 +339,16 @@ impl Router {
             (Method::Post, ["matches", id, "start"]) => {
                 Ok(HttpReply::ok(&service.start_match(id)?))
             }
+            // Reopening a finished round takes no player header for the same
+            // reason starting one does not: the room code is the permission,
+            // and the lobby says as much.
+            (Method::Post, ["matches", id, "rematch"]) => {
+                Ok(HttpReply::ok(&service.rematch(id)?))
+            }
+            (Method::Post, ["matches", id, "crews"]) => {
+                let request: CrewAssignment = decode(&call.body)?;
+                Ok(HttpReply::ok(&service.set_match_crews(id, &request.crews)?))
+            }
             (Method::Post, ["matches", id, "submissions"]) => {
                 let player = call.player_id.as_deref().ok_or(ServiceError::Internal(
                     "submitting requires an authenticated player",
@@ -352,6 +362,19 @@ impl Router {
             _ => Err(not_found()),
         }
     }
+}
+
+/// Body of `POST /matches/{id}/crews`.
+///
+/// A whole-map replace rather than a per-player edit: an instructor teams a
+/// room in one gesture, and two half-applied assignments racing each other
+/// would leave a roster nobody chose.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewAssignment {
+    /// Player id to crew label. A player absent from the map is un-crewed.
+    #[serde(default)]
+    crews: std::collections::HashMap<String, String>,
 }
 
 fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> ServiceResult<T> {

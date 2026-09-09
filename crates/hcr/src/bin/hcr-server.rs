@@ -41,7 +41,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let catalog = hcr::seed::seed_catalog();
+    // How many hairstyles the bank carries. A room of students playing
+    // competitive rounds works through the bank and then repeats, so a
+    // classroom wants more than the demonstration three.
+    let generated = std::env::var("HCR_GENERATED_ITEMS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(hcr::seed::DEFAULT_GENERATED_ITEMS);
+    let catalog = hcr::seed::seed_catalog_with(generated);
 
     let mut service = HcrService::new(
         catalog.clone(),

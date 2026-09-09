@@ -73,6 +73,8 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("/api/v1/matches/<id>/challenge", "hcr.matches.challenge"),
     ("/api/v1/matches/<id>/results", "hcr.matches.results"),
     ("/api/v1/matches/<id>/join", "hcr.matches.join"),
+    ("/api/v1/matches/<id>/rematch", "hcr.matches.rematch"),
+    ("/api/v1/matches/<id>/crews", "hcr.matches.crews"),
     ("/api/v1/matches/<id>/start", "hcr.matches.start"),
     ("/api/v1/matches/<id>/submissions", "hcr.matches.submit"),
 ];
@@ -99,6 +101,7 @@ pub const PLAYER_NAME_HEADER: &str = "x-hcr-player-name";
 /// generic network failure to the user.
 const CORS_ALLOW_HEADERS: &str = concat!(
     "Content-Type, Authorization, X-HCR-Player, X-HCR-Player-Name, ",
+    "X-HCR-Player-Utc-Offset-Minutes, ",
     "X-HCR-Research-Program-And-Scores, ",
     "X-HCR-Research-Language-Consent, ",
     "X-HCR-Research-Utc-Offset-Consent, ",
@@ -320,6 +323,10 @@ mod tests {
             "Authorization",
             "X-HCR-Player",
             "X-HCR-Player-Name",
+            // Sent by `HttpMatchProvider` on every match call, not only by the
+            // research-consent path — its absence blocked hosting a room
+            // entirely, as a bare "network error" in the lobby.
+            "X-HCR-Player-Utc-Offset-Minutes",
             "X-HCR-Research-Program-And-Scores",
             "X-HCR-Research-Language-Consent",
             "X-HCR-Research-Utc-Offset-Consent",
