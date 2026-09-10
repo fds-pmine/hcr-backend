@@ -76,20 +76,18 @@ fn the_bank_spans_enough_difficulty_to_adapt() {
 }
 
 #[test]
-fn cutter_grid_only_offers_challenges_the_client_can_plan() {
-    // The eight lessons all certify for Cutter Grid, but their profiles are not
-    // delivered to the client yet, so the catalog must not advertise the mode
-    // for them: a round or session that served one would hand a learner a task
-    // nothing can plan. This asserts the restraint, so re-enabling the mode has
-    // to be a deliberate edit here rather than a side effect somewhere else.
+fn cutter_grid_has_a_bank_rather_than_a_single_challenge() {
+    // A one-item Cutter Grid bank means an adaptive session ends after one
+    // challenge and a versus room repeats itself on the second round. Each item
+    // here ships a certified profile; a challenge advertising the mode without
+    // one is a task nobody can finish, so this count and the profile directory
+    // have to change together.
     let catalog = seed_catalog();
     let grid = measurable(&catalog, ProgrammingMode::CutterGrid);
     assert!(
-        !grid.is_empty(),
-        "no challenge is playable in Cutter Grid at all",
-    );
-    assert!(
-        grid.iter().all(|(id, _)| !id.starts_with("lesson-")),
-        "a lesson is advertised in Cutter Grid before its profile ships: {grid:?}",
+        grid.len() >= 9,
+        "Cutter Grid bank is {} items: {:?}",
+        grid.len(),
+        grid,
     );
 }

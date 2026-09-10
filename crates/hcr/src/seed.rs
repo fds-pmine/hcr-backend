@@ -153,17 +153,17 @@ pub fn seed_catalog_with(generated: usize) -> Arc<CatalogStore> {
                     mastery_threshold: 0.5,
                     generator: None,
                     hardware_compatible: false,
-                    // Servo only, for now, and the reason is delivery rather
-                    // than certification: all eight *do* certify, and their
-                    // profiles are generated into
-                    // `HCR_Simulator_Frontend/src/data/cutter-grid-profiles/`
-                    // by `npm run lessons:profiles`. But the frontend resolves
-                    // profiles synchronously from its bundle, and eagerly
-                    // bundling 2.2 MB of them doubled how long the workbench
-                    // took to load. Until they are delivered lazily, offering
-                    // the mode here would advertise a task the client cannot
-                    // plan — which is worse than not offering it.
-                    programming_modes: vec![ProgrammingMode::Servo],
+                    // All eight ship a certified Cutter Grid profile, built by
+                    // `npm run lessons:profiles` into
+                    // `HCR_Simulator_Frontend/src/data/cutter-grid-profiles/`.
+                    // Each proves its reference route removes exactly the
+                    // target and cuts nothing extra. Advertising the mode
+                    // without one would hand a learner a task nothing can plan,
+                    // so this list and those files have to move together.
+                    programming_modes: vec![
+                        ProgrammingMode::Servo,
+                        ProgrammingMode::CutterGrid,
+                    ],
                 },
             })
             .expect("seed lesson challenge");
