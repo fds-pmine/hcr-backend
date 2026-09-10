@@ -35,6 +35,14 @@ fn assets_match_their_sources() {
         "assets/cutter-grid-profile-v4.json",
     );
     compare(
+        include_str!("../assets/lessons.json"),
+        Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../HCR_Simulator_Frontend/tests/fixtures/lesson-challenges.json",
+        )),
+        "assets/lessons.json",
+    );
+    compare(
         include_str!("../assets/vectors.json"),
         Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -9,14 +9,17 @@ use hcr_contract::ScoreResult;
 use hcr_contract::api::{ReplayInfo, ScoreInput};
 use hcr_contract::{
     ChallengeDefinitionDto, ChallengeSummary, LessonEventAck, LessonEventCreate, NextItem,
-    ResponseOutcome, SessionRespond, SessionResultDto, SessionSnapshot, SessionStart,
-    SubmissionCreate, SubmissionResult, SubmissionStatus, TerminalReason,
+    ProgrammingMode, ResponseOutcome, SessionRespond, SessionResultDto, SessionSnapshot,
+    SessionStart, SubmissionCreate, SubmissionResult, SubmissionStatus, TerminalReason,
 };
 use hcr_contract::{CutterGridPlanRequestV1, CutterGridPlanResponseV1, CutterGridProfileV4};
 use hcr_contract::{
     MatchChallengeRef, MatchConfig, MatchResults, MatchState, MatchSubmissionAck, TimeSync,
 };
-use hcr_qbank::{Blueprint, ExposureController, HcrDynamicBank, OutcomeStore, SessionConfig};
+use hcr_qbank::{
+    Blueprint, ChallengeGenerator, ExposureController, HcrDynamicBank, OutcomeStore,
+    SessionConfig,
+};
 use hcr_sim::{VoxelSet, calculate_score, key_to_coord};
 
 use crate::catalog::CatalogStore;
@@ -42,6 +45,29 @@ const LESSON_SECTION_MAX: u32 = 200;
 /// class, and the number is being used to make a row look busy.
 const LESSON_TESTS_MAX: u32 = 10_000;
 
+/// Item ceiling for a practice session.
+///
+/// Not a measurement budget — a runaway guard. Nobody cuts five hundred
+/// hairstyles in a sitting, and a session object that grows without any bound
+/// at all is a leak rather than a feature.
+const PRACTICE_ITEM_CEILING: usize = 500;
+
+/// Precision a practice session never reaches, so it never stops early.
+///
+/// Zero would be the honest expression of "do not stop on precision", and
+/// arona rejects it — `target_se` must be positive. This is small enough that
+/// no attainable amount of information satisfies it.
+const PRACTICE_TARGET_SE: f64 = 1e-6;
+
+/// Share of a practice session any one hairstyle may occupy.
+const PRACTICE_MAX_EXPOSURE: f64 = 0.1;
+
+/// Administrations before that cap applies.
+///
+/// Not zero: the first item served would otherwise sit at 100% of a
+/// one-administration history and lock itself out immediately.
+const PRACTICE_EXPOSURE_WARMUP: u64 = 12;
+
 /// Service-wide configuration.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -59,6 +85,11 @@ pub struct ServiceConfig {
     pub match_results_retention_ms: u64,
     /// A lobby nobody starts is dropped after this long untouched.
     pub match_lobby_idle_timeout_ms: u64,
+    /// Item generator for practice sessions, if any.
+    ///
+    /// Only consulted when `SessionStart::practice` is set. A measurement
+    /// session must not synthesise items, so this is never reached from one.
+    pub generator: Option<Arc<dyn ChallengeGenerator>>,
     /// Cap on retained submission results.
     ///
     /// Bounds the idempotency store, which otherwise grows once per scored
@@ -73,6 +104,7 @@ impl Default for ServiceConfig {
             session: SessionConfig::default(),
             blueprint: Blueprint::unconstrained(),
             exposure: ExposureController::default(),
+            generator: None,
             seed: 0x5EED,
             session_idle_timeout_ms: 30 * 60 * 1000,
             // Long enough to read a scoreboard and argue about it, short enough
@@ -465,9 +497,50 @@ impl HcrService {
         let seed = self.config.seed.wrapping_add(ordinal);
 
         let outcomes = OutcomeStore::new();
-        let bank = HcrDynamicBank::new(snapshot, outcomes.clone(), seed)
+        let mut bank = HcrDynamicBank::new(snapshot, outcomes.clone(), seed)
             .with_blueprint(self.config.blueprint.clone())
             .with_exposure(self.config.exposure.clone());
+
+        // A practice session is not trying to converge on a number, so the two
+        // rules that end a measurement session are wrong for it: stopping once
+        // the standard error is small enough, and the item ceiling. Both are
+        // lifted here, which is what makes the session endless rather than
+        // twelve items long.
+        let session_config = if request.practice {
+            SessionConfig {
+                target_se: PRACTICE_TARGET_SE,
+                max_items: PRACTICE_ITEM_CEILING,
+                ..self.config.session
+            }
+        } else {
+            self.config.session
+        };
+
+        if request.practice {
+            // Provisional items are fine here: nothing this session reports is
+            // an authoritative measurement.
+            bank = bank.allow_uncalibrated(true);
+
+            // Practice wants variety, and the default cap does not deliver it:
+            // at a fifth of all administrations an item may come back eight
+            // times in forty. Tightening the cap is also what *reaches* the
+            // generator — selection only synthesises when nothing in the pool
+            // is servable, so the cap biting is the trigger.
+            bank = bank.with_exposure(
+                ExposureController::new(PRACTICE_MAX_EXPOSURE)
+                    .with_warmup(PRACTICE_EXPOSURE_WARMUP),
+            );
+
+            // Generation is Servo-only, and deliberately so. The generator
+            // emits `Cap Trim` items, which ship no certified Cutter Grid
+            // profile — synthesising one into a Cutter Grid session would serve
+            // a challenge that cannot be planned, let alone finished.
+            if request.programming_mode == ProgrammingMode::Servo {
+                if let Some(generator) = self.config.generator.clone() {
+                    bank = bank.with_generator(generator);
+                }
+            }
+        }
 
         let handle = self
             .sessions
@@ -475,7 +548,7 @@ impl HcrService {
                 SessionSpec {
                     session_id,
                     initial_theta: request.initial_theta.unwrap_or(0.0),
-                    config: self.config.session,
+                    config: session_config,
                     seed,
                     programming_mode: request.programming_mode,
                 },

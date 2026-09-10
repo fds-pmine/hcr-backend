@@ -25,6 +25,25 @@ use crate::CatalogStore;
 // `cutter_grid_planner.rs` on why a published crate cannot reach a sibling.
 const VECTORS: &str = include_str!("../assets/vectors.json");
 
+/// The eight Servo Angles lessons, as finished challenges.
+///
+/// They are authored content, not generated: a human wrote each solution and
+/// the target is whatever that solution leaves standing. That is why they are
+/// worth having in the catalog — the generated family varies one cut shape by
+/// four parameters, so a bigger generated bank is a *longer* bank rather than a
+/// wider one, while these eight differ in kind.
+const LESSONS: &str = include_str!("../assets/lessons.json");
+
+/// Difficulty for each lesson, in the order the fixture lists them.
+///
+/// A deliberate ladder rather than a measurement: lessons 1-4 are one sweep of
+/// growing extent, 5-7 add an aiming move in front of the sweep, and 8 needs
+/// two bands and a return to Home between them. Spreading them across the range
+/// also covers ground the generated family cannot reach — `CapTrimGenerator`
+/// spans roughly [-1.0, +0.2], so every item above that was previously served
+/// by nothing at all.
+const LESSON_DIFFICULTY: [f64; 8] = [-1.2, -0.9, -0.6, -0.3, 0.1, 0.4, 0.8, 1.3];
+
 /// How many generated items a catalog carries unless a deployment asks for more.
 ///
 /// Three demonstrates a dynamic bank. It does not feed a room: a class playing
@@ -36,6 +55,21 @@ pub const DEFAULT_GENERATED_ITEMS: usize = 3;
 /// `Online`; anything past them is generated across this range and left
 /// `Provisional`, which is exactly what a competitive round wants.
 const DIFFICULTY_RANGE: (f64, f64) = (-1.5, 1.5);
+
+/// The item generator, over the shipped challenge's geometry.
+///
+/// Handed to practice sessions so the bank can synthesise a new hairstyle when
+/// nothing in the pool fits, which is what stops endless practice ending after
+/// a dozen items. Measurement sessions never see it: a synthesised item is
+/// `Provisional`, and resting an ability estimate on an uncalibrated item is
+/// exactly what the calibration rule forbids.
+pub fn challenge_generator() -> Arc<dyn ChallengeGenerator> {
+    let vectors: serde_json::Value =
+        serde_json::from_str(VECTORS).expect("conformance fixture parses");
+    let shipped: ChallengeDefinition =
+        serde_json::from_value(vectors["challenge"].clone()).expect("challenge parses");
+    Arc::new(CapTrimGenerator::new(shipped))
+}
 
 /// Build a catalog: one authored challenge plus three generated items.
 pub fn seed_catalog() -> Arc<CatalogStore> {
@@ -87,6 +121,53 @@ pub fn seed_catalog_with(generated: usize) -> Arc<CatalogStore> {
             },
         })
         .expect("seed shipped challenge");
+
+    // The eight authored lessons. `Online` with a response count, because an
+    // adaptive session refuses `Provisional` items on purpose (`Bank::
+    // generate_at` returns None when `measurement_only`) — leaving them
+    // provisional would add eight challenges that Solo Practice could never
+    // serve, which is the exact complaint this is answering.
+    let lessons: serde_json::Value =
+        serde_json::from_str(LESSONS).expect("lesson fixture parses");
+    let entries = lessons["lessons"].as_array().expect("lessons is an array");
+    for (index, entry) in entries.iter().enumerate() {
+        let challenge: ChallengeDefinition =
+            serde_json::from_value(entry["challenge"].clone()).expect("lesson challenge parses");
+        let difficulty = LESSON_DIFFICULTY
+            .get(index)
+            .copied()
+            .unwrap_or(0.0);
+        catalog
+            .insert(ChallengeDefinitionDto {
+                challenge,
+                meta: ChallengeMeta {
+                    version: 1,
+                    irt: ItemParameters {
+                        discrimination: 1.1,
+                        difficulty,
+                        guessing: 0.0,
+                    },
+                    calibration: CalibrationState::Online,
+                    response_count: 50,
+                    dimensions: vec![SkillDimension::Kinematics, SkillDimension::Precision],
+                    mastery_threshold: 0.5,
+                    generator: None,
+                    hardware_compatible: false,
+                    // Servo only, for now, and the reason is delivery rather
+                    // than certification: all eight *do* certify, and their
+                    // profiles are generated into
+                    // `HCR_Simulator_Frontend/src/data/cutter-grid-profiles/`
+                    // by `npm run lessons:profiles`. But the frontend resolves
+                    // profiles synchronously from its bundle, and eagerly
+                    // bundling 2.2 MB of them doubled how long the workbench
+                    // took to load. Until they are delivered lazily, offering
+                    // the mode here would advertise a task the client cannot
+                    // plan — which is worse than not offering it.
+                    programming_modes: vec![ProgrammingMode::Servo],
+                },
+            })
+            .expect("seed lesson challenge");
+    }
 
     // The demonstration three are promoted to `Online` to stand in for items
     // that have already accumulated responses, because an adaptive session

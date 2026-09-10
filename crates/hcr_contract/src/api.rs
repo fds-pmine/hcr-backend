@@ -191,6 +191,21 @@ pub struct SessionStart {
     /// planner profile.
     #[serde(default, skip_serializing_if = "ProgrammingMode::is_default")]
     pub programming_mode: ProgrammingMode,
+    /// Run for practice rather than for measurement.
+    ///
+    /// A measurement session may only serve calibrated items, because an
+    /// uncalibrated one would contaminate the ability estimate
+    /// ([`07-CALIBRATION.md`] §8). That rule is also what makes the bank run
+    /// dry: once the calibrated items are spent the session ends, which is
+    /// correct for measuring somebody and useless for somebody who just wants
+    /// to keep practising.
+    ///
+    /// A practice session drops that restriction. It may serve provisional
+    /// items and, where a generator is attached, synthesise new ones on demand,
+    /// so it never runs out. The θ it reports is **not** an authoritative
+    /// measurement and callers must not persist it as one.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub practice: bool,
 }
 
 /// Where a session is in its lifecycle.

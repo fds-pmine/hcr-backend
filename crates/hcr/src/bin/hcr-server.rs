@@ -54,7 +54,13 @@ fn main() -> ExitCode {
         catalog.clone(),
         Arc::new(ReplayPool::with_default_concurrency()),
         ItemRefSigner::new(config.signing_key.clone()),
-        ServiceConfig::default(),
+        ServiceConfig {
+            // Practice sessions may synthesise a hairstyle when the pool has
+            // nothing at the right difficulty; measurement sessions never
+            // reach this.
+            generator: Some(hcr::seed::challenge_generator()),
+            ..ServiceConfig::default()
+        },
     );
 
     if let Some(path) = &config.usage_log_path {
