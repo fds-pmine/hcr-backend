@@ -242,6 +242,54 @@ jq -r 'select(.kind=="lesson") | [.lessonId, .section, .outcome] | @tsv' \
 jq -c 'select(.kind=="submission")' /var/lib/hcr/usage.jsonl
 ```
 
+### Backing it up, and deploying over it
+
+A deploy replaces `/usr/local/bin/hcr-server` and never opens `/var/lib/hcr`.
+The new process opens the same path in append mode and carries on: nothing is
+rewritten, there is no migration step, and there is nothing to do to the log
+itself. `an_upgrade_appends_to_the_log_the_previous_build_left` in
+`crates/hcr/tests/service.rs` holds that to be true of the file, not just of the
+code — it seeds a log with rows an older build wrote, runs this build against it,
+and checks the old bytes are still a byte-for-byte prefix.
+
+**Back up the directory, not the file.** Right after a rotation `usage.jsonl` is
+legitimately zero bytes and the day's rows are in `usage.jsonl.1`, so a backup of
+`usage.jsonl` alone captures nothing — and, worse, succeeds while doing it:
+
+```sh
+sudo tar czf /var/backups/hcr-usage-$(date +%F-%H%M).tar.gz -C /var/lib/hcr .
+tar tzvf /var/backups/hcr-usage-*.tar.gz    # non-empty, or the backup is a shell
+```
+
+A verification against an empty baseline passes vacuously — `cmp` of nothing
+against nothing is equal — so check the baseline has bytes before believing the
+comparison:
+
+```sh
+BAK=/var/backups/usage-BEFORE.jsonl
+SIZE=$(wc -c < "$BAK" 2>/dev/null || echo 0)
+if [ "${SIZE:-0}" -lt 1 ]; then
+  echo "baseline absent or empty: this check proves nothing"
+else
+  head -c "$SIZE" /var/lib/hcr/usage.jsonl | cmp -s - "$BAK" \
+    && echo "the old bytes are untouched" || echo "the old region changed"
+fi
+```
+
+After the restart, confirm collection actually resumed. The service **starts
+anyway** when the log cannot be opened — losing telemetry must not take the
+service down — so a `chown` that went wrong during a deploy is silent except for
+one line in the journal:
+
+```sh
+sudo journalctl -u hcr-server -b | grep -E "recording usage to|could not open usage log"
+```
+
+`recording usage to /var/lib/hcr/usage.jsonl` is the line that says it worked. If
+instead it could not open the file, the usual cause is a deploy step run as root
+leaving the file root-owned; `sudo chown hcr:hcr /var/lib/hcr/usage.jsonl` and
+restart.
+
 ### Reading rows written by more than one build
 
 The file is append-only and nothing ever rewrites a line, so a log that has been
