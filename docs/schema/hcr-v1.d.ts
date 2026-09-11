@@ -228,6 +228,19 @@ export interface SubmissionCreate {
    * present the server verifies the trajectory and `program` is empty. See `08-CUTTER-GRID.md`.
    */
   cutterGrid?: CutterGridSubmission;
+  /**
+   * Set when the program is a Cutter Grid route the **server** is to plan.
+   *
+   * The V4 counterpart of `cutterGrid`, and the difference is the point: that one carries a
+   * trajectory the client planned and the server audits; this one carries only the lattice program,
+   * and the server plans it with the certified Profile it already holds. No profile, no roadmap and
+   * no trajectory travel with it. `program` then carries an empty servo program, whose
+   * `sourceBlockCount` is the player's block count.
+   *
+   * Set at most one of `cutterGrid` and `cutterGridV4`. Requires a Profile registered on that server:
+   * without one the submission fails closed on `planner-not-ready`. See `08-CUTTER-GRID.md` §0.
+   */
+  cutterGridV4?: CutterGridProgramV4;
   sessionId?: string;
   itemRef?: string;
   /** Set when submitting into a competitive round; acceptance is by server receive time. */

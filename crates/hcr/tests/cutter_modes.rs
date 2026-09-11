@@ -19,6 +19,9 @@ use hcr_sim::ReplayOptions;
 
 const PLAN_FIXTURE: &str =
     include_str!("../../hcr_sim/tests/fixtures/cutter-grid-plan-v2.json");
+/// The server's own certified Profile — the same asset the service registers at
+/// bootstrap, read here for the one program in it that is known to be perfect.
+const BUNDLED_PROFILE_V4: &str = include_str!("../assets/cutter-grid-profile-v4.json");
 const VECTORS: &str = include_str!("../../hcr_sim/tests/fixtures/vectors.json");
 
 /// The shipped challenge, which is the one item with a certified Cutter Grid
@@ -39,6 +42,25 @@ fn catalog() -> Arc<CatalogStore> {
             },
         })
         .expect("insert dual-mode");
+
+    // Declares Cutter Grid and has no Profile registered in this process, which
+    // is the state every lesson challenge is in until its Profile is vendored
+    // here: the id is part of the Profile key, so a new id cannot match one.
+    let mut declared_unprofiled = challenge.clone();
+    declared_unprofiled.id = "declared-unprofiled".into();
+    store
+        .insert(ChallengeDefinitionDto {
+            challenge: declared_unprofiled,
+            meta: ChallengeMeta {
+                programming_modes: vec![ProgrammingMode::Servo, ProgrammingMode::CutterGrid],
+                // Fully servable, so nothing but the missing Profile can be
+                // what keeps it out of a round or a session. Before that check
+                // existed this fixture was served, and the test below said so.
+                calibration: CalibrationState::Calibrated,
+                ..ChallengeMeta::provisional(1, 0.0)
+            },
+        })
+        .expect("insert declared-but-unprofiled");
 
     let mut servo_only = challenge;
     servo_only.id = "servo-only".into();
@@ -75,6 +97,36 @@ fn service() -> HcrService {
     )
 }
 
+fn bundled_profile_v4() -> CutterGridProfileV4 {
+    serde_json::from_str(BUNDLED_PROFILE_V4).expect("bundled V4 profile parses")
+}
+
+/// The Profile's own certified perfect cut, which is the one program guaranteed
+/// to plan against it.
+fn reference_program_v4() -> CutterGridProgramV4 {
+    bundled_profile_v4().reference_program
+}
+
+fn cutter_v4_submission(id: &str) -> SubmissionCreate {
+    let program = reference_program_v4();
+    SubmissionCreate {
+        submission_id: id.into(),
+        challenge_id: "neat-short-cap".into(),
+        challenge_version: 1,
+        // Empty, like every Cutter Grid submission: there are no joint commands
+        // to replay, and the block count is the player's own.
+        program: Program {
+            nodes: Vec::new(),
+            source_block_count: program.source_block_count,
+        },
+        cutter_grid: None,
+        cutter_grid_v4: Some(program),
+        session_id: None,
+        match_id: None,
+        client_preview: None,
+    }
+}
+
 fn cutter_submission(id: &str) -> SubmissionCreate {
     let carried: CutterGridSubmission =
         serde_json::from_str(PLAN_FIXTURE).expect("plan fixture parses");
@@ -87,6 +139,7 @@ fn cutter_submission(id: &str) -> SubmissionCreate {
             source_block_count: carried.program.source_block_count,
         },
         cutter_grid: Some(carried),
+        cutter_grid_v4: None,
         session_id: None,
         match_id: None,
         client_preview: None,
@@ -106,6 +159,7 @@ fn servo_submission(id: &str, challenge_id: &str) -> SubmissionCreate {
             source_block_count: 1,
         },
         cutter_grid: None,
+        cutter_grid_v4: None,
         session_id: None,
         match_id: None,
         client_preview: None,
@@ -326,6 +380,99 @@ async fn results_report_the_round_mode() {
     assert_eq!(results.rows[0].completion_score, 100.0);
 }
 
+/// The V4 path: the client sends a route, the server plans it and scores what
+/// its own planner did.
+///
+/// The program is the Profile's certified reference, so the expected answer is
+/// not a number chosen here — it is the completion the Profile was certified
+/// against, and reaching it proves the whole chain ran: compile, plan against
+/// the registered Profile, sweep, score.
+#[tokio::test]
+async fn a_cutter_grid_round_accepts_a_server_planned_program() {
+    let clock = ManualClock::new(1_700_000_000_000);
+    let service = HcrService::with_clock(
+        catalog(),
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"cutter-modes-signing-key-012"),
+        ServiceConfig::default(),
+        Arc::new(clock.clone()),
+    );
+
+    let state = service
+        .create_match(round_config(ProgrammingMode::CutterGrid))
+        .expect("create");
+    service
+        .join_match(&state.match_id, "p1", "Player One")
+        .expect("join");
+    service.start_match(&state.match_id).expect("start");
+
+    let mut request = cutter_v4_submission("v4-1");
+    request.match_id = Some(state.match_id.clone());
+    let ack = service
+        .submit_to_match(&state.match_id, "p1", request)
+        .await
+        .expect("submit");
+    assert!(ack.accepted, "a V4 program is an entry in a Cutter Grid round");
+
+    clock.advance(120_000);
+
+    let results = service.match_results(&state.match_id).expect("results");
+    assert_eq!(results.programming_mode, ProgrammingMode::CutterGrid);
+    assert_eq!(results.rows.len(), 1);
+    assert!(
+        (results.rows[0].completion_score - bundled_profile_v4().certification.reference_completion)
+            .abs()
+            < 1e-9,
+        "the certified reference program scores what it was certified at, not {}",
+        results.rows[0].completion_score
+    );
+    // The server expanded the program itself, exactly as it does for servo.
+    assert!(results.rows[0].metrics.executed_command_count > 0);
+}
+
+/// One program, one motion.
+///
+/// A submission carrying both shapes would be asking the server to score a
+/// trajectory the client planned *and* one it planned itself. Whichever it
+/// picked would be a rule nobody wrote down.
+#[tokio::test]
+async fn a_submission_cannot_carry_both_cutter_grid_shapes() {
+    let service = service();
+    let mut request = cutter_submission("both-1");
+    request.cutter_grid_v4 = Some(reference_program_v4());
+
+    let error = service
+        .create_submission(request)
+        .await
+        .expect_err("two ways to say Cutter Grid is one too many");
+
+    assert_eq!(error.code(), HcrErrorCode::ProgramInvalid);
+}
+
+/// Declaring the mode is not the same as being able to plan it.
+///
+/// The catalog advertises Cutter Grid for every item that ships a Profile with
+/// the frontend; this process holds the ones registered here. A round opened on
+/// the difference would take submissions it could only refuse — one per player,
+/// at the end of the round.
+#[tokio::test]
+async fn a_round_cannot_open_on_a_challenge_this_server_cannot_plan() {
+    let service = service();
+
+    let error = service
+        .create_match(MatchConfig {
+            challenge_ref: Some(MatchChallengeRef {
+                challenge_id: "declared-unprofiled".into(),
+                version: 1,
+            }),
+            programming_mode: ProgrammingMode::CutterGrid,
+            ..round_config(ProgrammingMode::CutterGrid)
+        })
+        .expect_err("a lobby nobody can submit into is not a lobby");
+
+    assert_eq!(error.code(), HcrErrorCode::ProgramInvalid);
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -350,6 +497,34 @@ async fn a_cutter_grid_session_serves_only_profiled_items() {
         item.challenge_id, "neat-short-cap",
         "the servo-only item must not be served into a Cutter Grid session",
     );
+}
+
+/// A session serves only what *this* server can plan.
+///
+/// The catalog advertises Cutter Grid for every item shipping a Profile with
+/// the frontend. A session that served one this process cannot plan would hand
+/// the learner an item whose every submission fails `planner-not-ready`, and
+/// the learner would be the one to discover it.
+#[tokio::test]
+async fn a_cutter_grid_session_skips_items_this_server_cannot_plan() {
+    let service = service();
+    let snapshot = service
+        .start_session(SessionStart {
+            programming_mode: ProgrammingMode::CutterGrid,
+            ..SessionStart::default()
+        })
+        .await
+        .expect("start");
+
+    // `declared-unprofiled` advertises the mode and has no Profile here, so the
+    // bank has exactly one item and keeps serving it.
+    for _ in 0..3 {
+        let item = service
+            .next_item(&snapshot.session_id)
+            .await
+            .expect("an item");
+        assert_eq!(item.challenge_id, "neat-short-cap");
+    }
 }
 
 /// The estimate stays inside its own mode.
@@ -416,6 +591,42 @@ async fn a_cutter_grid_session_accepts_a_cutter_grid_response() {
         .expect("the response is in the session's own mode");
 
     assert!(outcome.correct, "a perfect cut should count as mastery");
+}
+
+/// Solo Practice, on the V4 path: the learner sends a route, the server plans
+/// it, and the ability estimate moves on the server's own sweep.
+#[tokio::test]
+async fn a_cutter_grid_session_accepts_a_server_planned_program() {
+    let service = service();
+    let snapshot = service
+        .start_session(SessionStart {
+            programming_mode: ProgrammingMode::CutterGrid,
+            ..SessionStart::default()
+        })
+        .await
+        .expect("start");
+    let item = service
+        .next_item(&snapshot.session_id)
+        .await
+        .expect("an item");
+
+    let mut request = cutter_v4_submission("s-v4");
+    request.challenge_id = item.challenge_id.clone();
+    request.challenge_version = item.challenge_version;
+    request.session_id = Some(snapshot.session_id.clone());
+    let scored = service.create_submission(request).await.expect("scores");
+    assert_eq!(scored.programming_mode, ProgrammingMode::CutterGrid);
+
+    let outcome = service
+        .respond(SessionRespond {
+            session_id: snapshot.session_id.clone(),
+            item_ref: item.item_ref,
+            submission_id: "s-v4".into(),
+        })
+        .await
+        .expect("the response is in the session's own mode");
+
+    assert!(outcome.correct, "a certified route is a perfect cut");
 }
 
 /// A servo session is unchanged, and still sees every item.

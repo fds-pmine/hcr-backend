@@ -737,6 +737,18 @@ async fn usage_records_the_calibration_datum_and_no_display_name() {
     assert_eq!(event["challengeVersion"], 1);
     assert!(event["completionScore"].is_number());
 
+    // Which rules produced `finalScore`. `challengeVersion` does not answer
+    // that: the deployed catalog has already changed a scoring block without
+    // moving the version, so rows either side claim version 1 and mean
+    // different things. The digest is what tells them apart afterwards.
+    assert_eq!(
+        event["scoringDigest"],
+        serde_json::Value::from(hcr::usage::scoring_digest(
+            &common::challenge("easy", 1, -1.0).challenge.scoring
+        )),
+        "{event}"
+    );
+
     // Free text a player typed is where a real name or an email would end up,
     // and grouping by playerId answers the same questions.
     assert!(event.get("displayName").is_none(), "{event}");
@@ -939,4 +951,69 @@ async fn a_lesson_event_says_so_when_the_deployment_collects_nothing() {
         )
         .expect("accepted");
     assert!(!ack.recorded);
+}
+
+/// A new build appends to the log the previous one left, and changes none of it.
+///
+/// This is the property a deploy rests on and the one worth having a test for,
+/// because the reassuring version of it — "the file is opened in append mode" —
+/// is a claim about code, and what an operator needs is a claim about the file.
+/// So: put rows written by an older build in place, run this build against the
+/// same path, and check the old bytes are still there, byte for byte, with the
+/// new row after them.
+#[tokio::test]
+async fn an_upgrade_appends_to_the_log_the_previous_build_left() {
+    let dir = std::env::temp_dir().join(format!("hcr-upgrade-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("usage.jsonl");
+
+    // What the running server has already collected, in the format it wrote:
+    // no `scoringDigest`, and `matchResults` rows duplicated the way recording
+    // per read left them.
+    let existing = std::fs::read_to_string("tests/fixtures/usage-legacy.jsonl").expect("fixture");
+    std::fs::write(&path, &existing).expect("seed the log");
+
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"upgrade-key"),
+        ServiceConfig::default(),
+    )
+    .with_usage_log(Arc::new(UsageLog::open(&path).expect("open the existing log")));
+
+    service
+        .create_submission_for(
+            submission("sub-after-upgrade", "easy", 1, safe_program()),
+            Some("u-after"),
+        )
+        .await
+        .unwrap();
+
+    let after = std::fs::read_to_string(&path).expect("log still readable");
+
+    // 1. Nothing was rewritten, truncated or reordered: the old file is a
+    //    prefix of the new one.
+    assert!(
+        after.starts_with(&existing),
+        "the previous build's rows must survive a deploy untouched"
+    );
+
+    // 2. Every one of those rows still parses as what it was.
+    for line in existing.lines().filter(|line| !line.trim().is_empty()) {
+        serde_json::from_str::<UsageEvent>(line).expect("a pre-upgrade row still parses");
+    }
+
+    // 3. The new row is appended, and is the new format.
+    let appended: Vec<&str> = after[existing.len()..]
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(appended.len(), 1, "one submission, one new row: {appended:?}");
+    let new_row: serde_json::Value = serde_json::from_str(appended[0]).expect("json");
+    assert_eq!(new_row["playerId"], "u-after");
+    assert!(new_row["scoringDigest"].is_string(), "{new_row}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -27,6 +27,41 @@ V4 不开放 Submission、Session、Match、Versus、Electron、固件或 ArmDoc
 客户端补交的 Profile。服务不可达、超时、429 或 5xx 时才允许前端回退到现有 TypeScript
 Worker；其余 4xx、签名不匹配和畸形响应必须 fail closed。
 
+### Amended 2026-09-11: V4 is open to Submission, Match and Session
+
+Submissions, competitive rounds and adaptive sessions are no longer closed to V4. Electron, firmware and
+ArmDock still are, and the V2 channel above is unchanged.
+
+A session needed no separate channel: `SubmissionCreate` is one shape and a session submission is the same
+one with `sessionId` set, so opening the submission path opened Solo Practice with it. What a session *did*
+need is the same honesty about what this process can plan — `start_session` now builds its bank from the
+items it holds a Profile for, because an adaptive session that served an unplannable item would hand the
+learner one whose every submission fails `planner-not-ready`.
+
+What opened is deliberately the *narrow* half of the door. `SubmissionCreate.cutterGridV4` carries a
+`CutterGridProgramV4` and **nothing else** — no profile, no roadmap, no trajectory, not even the plan the
+browser just ran. The server resolves its own certified `CutterGridProfileV4`, plans the route with
+`plan_cutter_grid_v4`, and scores the result of its own sweep (`hcr_sim::replay_planned_v4`). So this path
+has no client trajectory to audit, which is the entire reason §§1–10 exist for V2: there is nothing to
+verify when nothing was uploaded.
+
+Consequences worth stating plainly:
+
+- **The score is the server's plan, not the player's preview.** A browser running the TypeScript V4 planner
+  and this server running the Rust one must agree within the tolerances of the shared fixtures
+  (`02-DETERMINISM.md`); where they do not, the server's number is the one that counts, exactly as it is
+  for a servo program.
+- **A round is refused at creation when this process cannot plan it.** Declaring the mode in the catalog
+  and holding a Profile are different facts: `HcrService::create_match` now requires the second, and an
+  unpinned round skips past items it cannot plan rather than opening on one. A Profile registered here is
+  therefore the limit on which challenges a Cutter Grid round can use — today, only the bundled
+  `neat-short-cap`.
+- **A submission may carry `cutterGrid` or `cutterGridV4`, never both.** Two shapes would mean two motions
+  for one program, and whichever the server preferred would be a rule nobody wrote down.
+- **Planning is on the submission path now**, so `CutterGridPlannerPool::with_default_concurrency` is sized
+  from the machine like the replay pool, not fixed at two. Twenty players submitting in the closing seconds
+  of a round are twenty plans.
+
 以下第 1–10 节描述现有 V2 验证通道。V4 实现完成后会补充同一文件中的 Rust 规划器、Profile
 注册表和路由细节，但不会改变这条 V2 历史兼容通道。
 

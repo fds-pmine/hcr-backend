@@ -224,6 +224,21 @@ impl CatalogStore {
     /// refused, and fall back to a less informative one — while looking like it
     /// was working.
     pub fn snapshot_for(&self, mode: ProgrammingMode) -> ServiceResult<Arc<CatalogSnapshot>> {
+        self.snapshot_for_playable(mode, |_| true)
+    }
+
+    /// The same snapshot, minus what the caller cannot actually serve.
+    ///
+    /// Declaring a mode and being able to *run* it are different facts: a
+    /// Cutter Grid item advertises the mode because a Profile exists for it
+    /// somewhere, and only the service knows which Profiles this process holds.
+    /// The catalog stays ignorant of planners; the predicate carries that
+    /// knowledge in from the one place that has it.
+    pub fn snapshot_for_playable(
+        &self,
+        mode: ProgrammingMode,
+        playable: impl Fn(&ChallengeDefinitionDto) -> bool,
+    ) -> ServiceResult<Arc<CatalogSnapshot>> {
         let inner = self
             .inner
             .read()
@@ -234,6 +249,7 @@ impl CatalogStore {
             .iter()
             .filter_map(|(id, version)| inner.versions.get(&(id.clone(), *version)))
             .filter(|dto| dto.meta.supports(mode))
+            .filter(|dto| playable(dto))
             .map(|dto| BankItem::new(dto.challenge.id.clone(), dto.meta.clone()))
             .collect();
 

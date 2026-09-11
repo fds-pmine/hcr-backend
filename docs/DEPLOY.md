@@ -242,6 +242,70 @@ jq -r 'select(.kind=="lesson") | [.lessonId, .section, .outcome] | @tsv' \
 jq -c 'select(.kind=="submission")' /var/lib/hcr/usage.jsonl
 ```
 
+### Reading rows written by more than one build
+
+The file is append-only and nothing ever rewrites a line, so a log that has been
+collecting for a while holds rows from every build that has run against it.
+Three things about such a file are easy to read wrongly:
+
+**`matchResults` used to be written once per reader.** The row is recorded when
+the standings are published, but every client in the room polls for them the
+moment the round closes, and builds before this one recorded on every call — a
+seventeen-player round left fifteen identical rows seconds apart. Those rows are
+still there and no fix reaches them. Deduplicate, which reads both eras
+correctly:
+
+```sh
+# Rounds actually played. A room keeps its matchId across a rematch, so the
+# round is (matchId, challengeId), not matchId.
+jq -r 'select(.kind=="matchResults") | [.matchId, .challengeId] | @tsv' \
+  /var/lib/hcr/usage.jsonl | sort -u | wc -l
+```
+
+**`scoringDigest` names the weighting a `submission` was graded against.**
+`challengeVersion` was supposed to answer that and does not: nothing forces the
+version up when only the scoring block beneath it changes, and that has already
+happened — `neat-short-cap` moved from `referenceProgramCost` 6.25 /
+`referenceTimeMs` 5645 to 1.25 / 1000 on 2026-08-27 and stayed version 1. Rows
+from either side of that date claim the same version and mean different things.
+
+| Digest | `neat-short-cap` scoring | Written |
+| --- | --- | --- |
+| *(absent)* | not recorded — resolve from `ts` | before the field existed |
+| `2081283affc7cc7d` | 6.25 / 5645 | until 2026-08-27 |
+| `448b870304930bb7` | 1.25 / 1000 | after 2026-08-27 |
+
+An absent digest means **not recorded**, never "the current one".
+
+What the reweighting spoils is narrower than it looks:
+
+- `completionScore` is **unaffected** — it compares voxels against the target and
+  never consults the scoring block. The calibration datum this section exists to
+  collect survived, which is why [`07-CALIBRATION.md`](07-CALIBRATION.md) fits
+  on it.
+- `finalScore` is **not comparable** across a change of digest, and neither is
+  the adaptive `rawScore`, which is `finalScore / 100`. Ability estimates either
+  side of one are in different units. Group by `scoringDigest` before comparing
+  either, and treat absent as its own group.
+
+**A `submission` row is an attempt, not a person's answer to an item.**
+Resubmission is unlimited by design — the best attempt counts — so one learner
+can leave dozens of rows for one item, and the log has several runs of identical
+rows seconds apart. That is fine for usage and wrong for calibration, where a
+repeated response breaks the local independence an IRT fit assumes. Take one row
+per (player, item, round) before a refit:
+
+```sh
+# First attempt per person per item per round. `.playerId // .sessionId`
+# because a submission made inside an adaptive session carries no playerId —
+# only the match path passes one — so the session id is the person key there.
+jq -r -s 'map(select(.kind=="submission"))
+  | group_by([.playerId // .sessionId, .challengeId, .matchId])
+  | map(min_by(.ts))
+  | .[] | [.playerId // .sessionId, .challengeId, .completionScore] | @tsv' \
+  /var/lib/hcr/usage.jsonl
+```
+
 **Not recorded**, deliberately:
 
 - **Display names.** Free text a player typed, which is where a real name or an

@@ -986,3 +986,76 @@ fn reading_a_scoreboard_keeps_it_alive() {
         1
     );
 }
+
+// ---------------------------------------------------------------------------
+// Usage collection
+// ---------------------------------------------------------------------------
+
+/// One closed round is one row, however many people read the standings.
+///
+/// Not a cosmetic saving. Every client in the room polls for the standings when
+/// the round closes, so a row per call is a row per *reader*: the deployed log
+/// has closes that wrote fifteen identical rows, and "how many rounds were
+/// played" read straight off those rows came out multiplied by the audience.
+#[tokio::test]
+async fn a_closed_round_is_recorded_once_however_many_clients_read_it() {
+    let dir = std::env::temp_dir().join(format!("hcr-rounds-usage-{}", std::process::id()));
+    let path = dir.join("usage.jsonl");
+    let _ = std::fs::remove_file(&path);
+
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000)
+        .with_usage_log(Arc::new(UsageLog::open(&path).expect("open log")));
+
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    service.join_match(&state.match_id, "bob", "Bob").unwrap();
+    service.start_match(&state.match_id).unwrap();
+    service
+        .submit_to_match(
+            &state.match_id,
+            "alice",
+            submission("sub-1", "easy", 1, safe_program()),
+        )
+        .await
+        .unwrap();
+    clock.advance(60_001);
+
+    // Both players' browsers ask, and one of them refreshes.
+    for _ in 0..3 {
+        service.match_results(&state.match_id).unwrap();
+    }
+
+    let rows = match_results_rows(&path);
+    assert_eq!(rows.len(), 1, "one close, one row: {rows:?}");
+    assert_eq!(rows[0]["players"], 2);
+    assert_eq!(rows[0]["submitted"], 1);
+
+    // The next challenge in the same room is a different round, and the fix
+    // must not swallow it: `matchId` alone does not identify a round.
+    service.rematch(&state.match_id).unwrap();
+    service.start_match(&state.match_id).unwrap();
+    clock.advance(60_001);
+    service.match_results(&state.match_id).unwrap();
+    service.match_results(&state.match_id).unwrap();
+
+    let rows = match_results_rows(&path);
+    assert_eq!(rows.len(), 2, "a rematch publishes standings of its own");
+    assert_ne!(
+        rows[0]["challengeId"], rows[1]["challengeId"],
+        "the rematch picks an item the room has not played"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Every `matchResults` row in the log so far.
+fn match_results_rows(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .expect("log written")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("a json row"))
+        .filter(|row| row["kind"] == "matchResults")
+        .collect()
+}

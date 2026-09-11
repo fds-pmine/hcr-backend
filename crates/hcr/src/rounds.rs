@@ -83,6 +83,14 @@ struct Room {
     /// it takes B, and from B it takes A again. Remembering the whole room's
     /// history turns four presses into four hairstyles.
     played: Vec<String>,
+    /// Whether the standings for the round now in `Results` have been handed
+    /// out already.
+    ///
+    /// Every client in the room polls for the standings, so "a round closed"
+    /// and "somebody read the standings" are not the same event and the second
+    /// happens once per player. Per round, not per room: a rematch clears it,
+    /// because the next challenge publishes standings of its own.
+    results_published: bool,
 }
 
 impl Room {
@@ -212,6 +220,7 @@ impl MatchRegistry {
             last_submit_at: HashMap::new(),
             last_seen: now,
             played: vec![challenge_id],
+            results_published: false,
         };
 
         let state = room.public_state(now);
@@ -312,6 +321,9 @@ impl MatchRegistry {
         room.challenge = challenge;
         room.entries.clear();
         room.last_submit_at.clear();
+        // The standings about to be played for are not the ones already
+        // published, so the next close is a first publication again.
+        room.results_published = false;
         for player in room.players.values_mut() {
             player.submitted = false;
         }
@@ -507,6 +519,21 @@ impl MatchRegistry {
     /// Refused while the round is running: publishing early is the whole thing
     /// the hidden-score rule exists to prevent.
     pub fn results(&self, match_id: &str) -> ServiceResult<MatchResults> {
+        self.results_once(match_id).map(|(results, _)| results)
+    }
+
+    /// Final standings, and whether this call is the one that published them.
+    ///
+    /// The standings themselves are the same either way; the flag exists for
+    /// callers that must act once per round rather than once per reader, which
+    /// on this endpoint is every caller with a side effect. Usage collection is
+    /// the one that has it today, and got it wrong first: it recorded a row per
+    /// read, so a sixteen-player round wrote sixteen identical rows and any
+    /// count of rounds played came out multiplied by the audience.
+    ///
+    /// The flag is flipped inside the registry lock, so exactly one of any
+    /// number of simultaneous readers is told `true`.
+    pub fn results_once(&self, match_id: &str) -> ServiceResult<(MatchResults, bool)> {
         let now = self.clock.now_ms();
         let mut rooms = self.lock()?;
         let room = rooms
@@ -572,14 +599,20 @@ impl MatchRegistry {
             row.rank = index as u32 + 1;
         }
 
-        Ok(MatchResults {
-            match_id: match_id.to_string(),
-            challenge_id: room.challenge.challenge_id.clone(),
-            challenge_version: room.challenge.version,
-            rank_by,
-            programming_mode: room.state.config.programming_mode,
-            rows,
-        })
+        let first_publication = !room.results_published;
+        room.results_published = true;
+
+        Ok((
+            MatchResults {
+                match_id: match_id.to_string(),
+                challenge_id: room.challenge.challenge_id.clone(),
+                challenge_version: room.challenge.version,
+                rank_by,
+                programming_mode: room.state.config.programming_mode,
+                rows,
+            },
+            first_publication,
+        ))
     }
 
     /// Abandon a round that never ran.

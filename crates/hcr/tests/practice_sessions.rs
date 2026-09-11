@@ -82,6 +82,7 @@ fn attempt(id: &str, challenge_id: &str) -> SubmissionCreate {
             source_block_count: 1,
         },
         cutter_grid: None,
+        cutter_grid_v4: None,
         session_id: None,
         match_id: None,
         client_preview: None,

@@ -91,6 +91,27 @@ pub struct SubmissionCreate {
     /// (`docs/backend/08-CUTTER-GRID.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cutter_grid: Option<crate::cutter::CutterGridSubmission>,
+    /// Present when the submission is a Cutter Grid program the **server** is
+    /// to plan.
+    ///
+    /// The V4 counterpart of `cutterGrid`, and the difference is the whole
+    /// point of it: that one carries a trajectory the client planned and the
+    /// server audits, this one carries only the lattice program, and the
+    /// server plans it with the certified Profile it already holds. There is
+    /// no client trajectory to verify because there is no client trajectory —
+    /// which removes the audit, the signature check and the class of
+    /// disagreements where a browser and a server plan the same route two
+    /// different ways.
+    ///
+    /// Set at most one of the two. A submission carrying both is refused
+    /// rather than silently preferring either, because the two would be
+    /// answering with different motions for the same program.
+    ///
+    /// Requires a registered V4 Profile for the pinned Challenge; without one
+    /// the submission fails closed on `planner-not-ready`
+    /// (`docs/08-CUTTER-GRID.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cutter_grid_v4: Option<crate::cutter::CutterGridProgramV4>,
     /// Set when this submission belongs to an adaptive session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,

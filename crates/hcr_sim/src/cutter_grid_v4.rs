@@ -21,9 +21,15 @@ use hcr_contract::{
 };
 
 use crate::collision::{find_robot_head_collision, measure_robot_head_clearance};
+use crate::engine::ReplayOutcome;
+use crate::error::SimError;
 use crate::kinematics::compute_robot_pose;
+use crate::scoring::calculate_score;
 use crate::state::JointAngles;
-use crate::voxel::{VoxelSet, coord_to_key, find_swept_voxel_hits, voxel_coord_to_world};
+use crate::voxel::{
+    VoxelSet, coord_to_key, find_swept_voxel_hits, key_to_coord, result_voxels_hash,
+    voxel_coord_to_world,
+};
 
 /// V4's fixed DLS numerical parameters, shared with the TypeScript Worker.
 pub const CUTTER_GRID_V4_IK_MAX_ITERATIONS: usize = 80;
@@ -1723,6 +1729,65 @@ fn finalize_cutter_grid_v4_geometry_plan(
         )
     })?;
     Ok(plan)
+}
+
+/// Score a route the **server** planned.
+///
+/// The V4 counterpart of [`crate::cutter::verify_and_replay`], and much shorter
+/// for one reason: there is nothing to audit. That function exists because a V2
+/// submission carries a trajectory a browser produced, so every waypoint, every
+/// pose transition and every claimed cut has to be re-derived before a score can
+/// rest on it. Here the plan came out of [`plan_cutter_grid_v4`] on this machine,
+/// against a Profile only this machine holds — `expected_result_voxels` is
+/// already the server's own answer, computed from actual swept contact
+/// (`collect_actual_sweep_v4`), and re-deriving it would be recomputing the same
+/// function to check it agrees with itself.
+///
+/// What is still taken from the player is the one thing that is theirs: the
+/// number of blocks they placed. Everything the score turns on — the commands
+/// the program expanded to, the time it takes, the hair it removes — is the
+/// planner's.
+///
+/// # Errors
+/// [`SimError::Internal`] if the plan carries a voxel key that is not in the
+/// canonical `"x,y,z"` form, which would mean a planner bug rather than bad
+/// input, and [`SimError::InvalidScoring`] by way of [`calculate_score`].
+pub fn replay_planned_v4(
+    challenge: &ChallengeDefinition,
+    source_block_count: u32,
+    plan: &hcr_contract::CutterTrajectoryPlanV4,
+) -> Result<ReplayOutcome, SimError> {
+    let initial: VoxelSet = challenge.initial_hair.voxels.iter().copied().collect();
+    let target: VoxelSet = challenge.target_hair.voxels.iter().copied().collect();
+
+    let mut remaining = VoxelSet::new();
+    for key in &plan.expected_result_voxels {
+        remaining.insert(
+            key_to_coord(key).ok_or(SimError::Internal("V4 plan carries a malformed voxel key"))?,
+        );
+    }
+
+    let metrics = hcr_contract::ProgramMetrics {
+        source_block_count,
+        // The planner's own expansion, never a client's count — the same rule
+        // the servo path follows, arrived at differently.
+        executed_command_count: plan.executed_command_count,
+        estimated_duration_ms: plan.estimated_duration_ms,
+    };
+    let score = calculate_score(&initial, &target, &remaining, &metrics, &challenge.scoring)?;
+    let result_voxels_hash = result_voxels_hash(&remaining);
+
+    Ok(ReplayOutcome {
+        score,
+        metrics,
+        remaining_voxels: remaining,
+        result_voxels_hash,
+        // A plan that could not be certified never became a plan: planning
+        // fails closed and the submission is refused, so anything that reaches
+        // here ran to the end of the route.
+        terminal: hcr_contract::Terminal::completed(),
+        simulated_ms: plan.estimated_duration_ms,
+    })
 }
 
 #[derive(Debug, Clone)]

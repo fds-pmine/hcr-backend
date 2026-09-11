@@ -140,6 +140,7 @@ pub fn submission(
         challenge_version: version,
         program,
         cutter_grid: None,
+        cutter_grid_v4: None,
         session_id: None,
         match_id: None,
         client_preview: None,

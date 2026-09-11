@@ -160,7 +160,16 @@ impl CutterGridPlannerPool {
 
     /// Production default: two potentially expensive global graph searches.
     pub fn with_default_concurrency(profiles: Arc<CutterGridProfileRegistry>) -> Self {
-        Self::new(2, profiles)
+        // Sized like the replay pool, and for the same reason it had to be:
+        // planning is on the submission path now, not only behind the Practice
+        // planning endpoint. Twenty players pressing Submit in the last ten
+        // seconds of a round are twenty plans, and a fixed pair of permits
+        // turned eighteen of them into "replay capacity is saturated" —
+        // a refusal that reads as a server fault and costs the round.
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get().saturating_sub(1).max(1))
+            .unwrap_or(1);
+        Self::new(cores, profiles)
     }
 
     /// Expose the immutable Profile store for bootstrap registration only.

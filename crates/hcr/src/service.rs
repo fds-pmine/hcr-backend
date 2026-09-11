@@ -383,10 +383,47 @@ impl HcrService {
         // Captured before `request` is partly moved into the result below.
         let (match_id, session_id) = (request.match_id.clone(), request.session_id.clone());
 
+        // Two ways to say "Cutter Grid" would be one way too many: they would
+        // answer with different motions for the same program, and whichever the
+        // server preferred would be a rule nobody wrote down.
+        if request.cutter_grid.is_some() && request.cutter_grid_v4.is_some() {
+            return Err(ServiceError::ProgramInvalid {
+                message: "A submission carries either a planned Cutter Grid trajectory or a V4 program, not both.".into(),
+                field: None,
+            });
+        }
+
         // Which engine runs is decided by the submission, not by configuration:
         // a Cutter Grid program has no joint commands to replay, and a servo
         // program has no trajectory to verify.
-        let (outcome, mode, diverged_from_client) = match request.cutter_grid.as_ref() {
+        let (outcome, mode, diverged_from_client) = if let Some(program) =
+            request.cutter_grid_v4.as_ref()
+        {
+            /*
+                V4: the server plans the route itself.
+
+                The client sent the lattice program and nothing else, so there
+                is no trajectory to audit and no signature to compare — the
+                plan is this machine's, produced from a Profile only this
+                machine holds. `plan` fails closed when no certified Profile is
+                registered for the Challenge, which is the same answer the
+                lobby already gave when the round was opened.
+            */
+            let planned = self.cutter_grid_planner.plan(&dto, program).await?;
+            let outcome = hcr_sim::replay_planned_v4(
+                &dto.challenge,
+                program.source_block_count,
+                &planned.response.plan,
+            )?;
+            (
+                outcome,
+                crate::usage::ProgrammingMode::CutterGrid,
+                // Nothing to diverge from: the client reported no plan and no
+                // preview this path could be compared against.
+                false,
+            )
+        } else {
+            match request.cutter_grid.as_ref() {
             Some(cutter) => {
                 let verified = self.replay.verify_cutter(&dto, cutter).await?;
                 let diverged = verified.divergence.diverged();
@@ -407,6 +444,7 @@ impl HcrService {
                     crate::usage::ProgrammingMode::Servo,
                     diverged,
                 )
+            }
             }
         };
 
@@ -435,6 +473,9 @@ impl HcrService {
         };
 
         self.store_submission(&result);
+        // `dto` is the version that was actually replayed against, so its
+        // scoring block is the one that produced these scores — not whatever
+        // the catalog holds for this challenge by the time anyone reads the log.
         self.record(crate::usage::UsageEvent::from_submission(
             self.now(),
             player_id.map(str::to_owned),
@@ -442,6 +483,7 @@ impl HcrService {
             match_id,
             session_id,
             mode,
+            &dto.challenge.scoring,
         ));
         Ok(result)
     }
@@ -483,8 +525,16 @@ impl HcrService {
     /// Open an adaptive session.
     pub async fn start_session(&self, request: SessionStart) -> ServiceResult<SessionSnapshot> {
         // Only items playable in this mode, so adaptive selection chooses from
-        // what it can actually serve.
-        let snapshot = self.catalog.snapshot_for(request.programming_mode)?;
+        // what it can actually serve — and "playable" includes this process
+        // holding a Profile to plan the route with, not merely the catalog
+        // advertising the mode. Without that an adaptive Cutter Grid session
+        // would serve an item whose every submission fails `planner-not-ready`,
+        // and the learner would be the one to find out.
+        let snapshot = self
+            .catalog
+            .snapshot_for_playable(request.programming_mode, |dto| {
+                self.plannable_in_mode(dto, request.programming_mode).is_ok()
+            })?;
         if snapshot.is_empty() {
             return Err(ServiceError::BankExhausted);
         }
@@ -696,6 +746,56 @@ impl HcrService {
         }
     }
 
+    /// Whether *this* server can produce the motion a round in `mode` needs.
+    ///
+    /// Servo always: replay is the engine, and every challenge has one. Cutter
+    /// Grid only where a certified V4 Profile is registered, because the server
+    /// plans the route itself now (`SubmissionCreate::cutter_grid_v4`) and a
+    /// route it cannot plan is a round nobody can enter.
+    fn plannable_in_mode(
+        &self,
+        dto: &ChallengeDefinitionDto,
+        mode: ProgrammingMode,
+    ) -> ServiceResult<()> {
+        if mode != ProgrammingMode::CutterGrid {
+            return Ok(());
+        }
+        self.cutter_grid_planner
+            .profiles()
+            .profile_for(dto)
+            .map(|_| ())
+            .map_err(|_| ServiceError::ProgramInvalid {
+                message: format!(
+                    "This server holds no certified Cutter Grid Profile for challenge \"{}\".",
+                    dto.challenge.id
+                ),
+                field: None,
+            })
+    }
+
+    /// Choose a challenge a round in `mode` can actually be played on.
+    ///
+    /// `pick_for_match_excluding` answers from the catalog, which advertises
+    /// Cutter Grid for every item that ships a Profile with the frontend. This
+    /// process holds fewer of those, so an item it cannot plan is skipped and
+    /// the next one asked for, rather than becoming a round nobody can enter.
+    fn pick_playable_excluding(
+        &self,
+        mode: ProgrammingMode,
+        exclude: &[String],
+    ) -> ServiceResult<(String, u32)> {
+        let mut refused = exclude.to_vec();
+        loop {
+            let (challenge_id, version) =
+                self.catalog.pick_for_match_excluding(mode, &refused)?;
+            let dto = self.catalog.get(&challenge_id, Some(version))?;
+            if self.plannable_in_mode(&dto, mode).is_ok() {
+                return Ok((challenge_id, version));
+            }
+            refused.push(challenge_id);
+        }
+    }
+
     /// Open a round.
     ///
     /// The challenge is chosen now but **not revealed** until the round starts:
@@ -721,14 +821,21 @@ impl HcrService {
                         field: None,
                     });
                 }
+                // And one step further still, because the catalog's answer and
+                // this server's are not the same answer: an item advertises the
+                // mode, a *Profile* is what lets this process plan it. A round
+                // opened on the difference would take submissions it could only
+                // refuse, one per player, at the end of the round.
+                self.plannable_in_mode(&dto, config.programming_mode)?;
                 pinned.clone()
             }
             None => {
                 // Not `list()[0]`: a listing is ordered for humans, and taking
                 // its head made the item a round ran on an accident of the
                 // alphabet. `pick_for_match` chooses for a reason.
+                //
                 let (challenge_id, version) =
-                    self.catalog.pick_for_match(config.programming_mode)?;
+                    self.pick_playable_excluding(config.programming_mode, &[])?;
                 MatchChallengeRef {
                     challenge_id,
                     version,
@@ -757,13 +864,24 @@ impl HcrService {
         // immediate repeat — a room that has played everything should carry on
         // rather than stop.
         let (challenge_id, version, wrapped) =
-            match self.catalog.pick_for_match_excluding(mode, &played) {
+            match self.pick_playable_excluding(mode, &played) {
                 Ok((challenge_id, version)) => (challenge_id, version, false),
                 Err(ServiceError::BankExhausted) => {
                     let last = played.last().cloned().into_iter().collect::<Vec<_>>();
-                    let (challenge_id, version) =
-                        self.catalog.pick_for_match_excluding(mode, &last)?;
-                    (challenge_id, version, true)
+                    match self.pick_playable_excluding(mode, &last) {
+                        Ok((challenge_id, version)) => (challenge_id, version, true),
+                        // One playable item, which is where a Cutter Grid round
+                        // stands until more Profiles are registered here. The
+                        // room replays it rather than being told it cannot
+                        // reopen: the same hairstyle twice is a worse round, and
+                        // no round at all is not a round.
+                        Err(ServiceError::BankExhausted) => {
+                            let (challenge_id, version) =
+                                self.pick_playable_excluding(mode, &[])?;
+                            (challenge_id, version, true)
+                        }
+                        Err(other) => return Err(other),
+                    }
                 }
                 Err(other) => return Err(other),
             };
@@ -830,24 +948,34 @@ impl HcrService {
 
     /// Final standings, once the round has closed.
     pub fn match_results(&self, match_id: &str) -> ServiceResult<MatchResults> {
-        let results = self.matches.results(match_id)?;
-        // Recorded on first publication only: `results()` refuses until the
-        // round closes, and afterwards the room is evicted rather than replayed,
-        // so repeated reads of the same standings are cheap duplicates at worst.
-        self.record(crate::usage::UsageEvent::MatchResults {
-            ts: self.now(),
-            match_id: results.match_id.clone(),
-            challenge_id: results.challenge_id.clone(),
-            challenge_version: results.challenge_version,
-            mode: results.programming_mode,
-            players: results.rows.len(),
-            submitted: results
-                .rows
-                .iter()
-                .filter(|row| row.submission_id.is_some())
-                .count(),
-            top_completion: results.rows.first().map_or(0.0, |row| row.completion_score),
-        });
+        let (results, first_publication) = self.matches.results_once(match_id)?;
+        // Recorded on first publication only. Every client in the room polls
+        // this endpoint once the round closes, so recording per call recorded
+        // per *reader*: a seventeen-player round wrote fifteen identical rows
+        // and "how many rounds were played" came out multiplied by however many
+        // people happened to be looking. The registry decides which call is the
+        // first, under its own lock.
+        //
+        // Rows written before this fix still carry those duplicates, and no
+        // rewrite will reach them — the log is append-only. Deduplicating on
+        // (matchId, challengeId) reads both eras correctly, which is what
+        // `docs/DEPLOY.md` §3 now tells an analysis to do.
+        if first_publication {
+            self.record(crate::usage::UsageEvent::MatchResults {
+                ts: self.now(),
+                match_id: results.match_id.clone(),
+                challenge_id: results.challenge_id.clone(),
+                challenge_version: results.challenge_version,
+                mode: results.programming_mode,
+                players: results.rows.len(),
+                submitted: results
+                    .rows
+                    .iter()
+                    .filter(|row| row.submission_id.is_some())
+                    .count(),
+                top_completion: results.rows.first().map_or(0.0, |row| row.completion_score),
+            });
+        }
         Ok(results)
     }
 

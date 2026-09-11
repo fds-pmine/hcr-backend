@@ -80,5 +80,5 @@ pub use cutter_grid_v4::{
     cutter_grid_coord_to_world_v4, enumerate_cutter_grid_ik_candidates_v4,
     evaluate_cutter_grid_sync_ptp_v4, measure_cutter_grid_sync_ptp_dynamics_v4,
     minimum_normalized_joint_limit_margin_v4, normalized_joint_distance_v4, plan_cutter_grid_v4,
-    plan_cutter_grid_v4_geometry,
+    plan_cutter_grid_v4_geometry, replay_planned_v4,
 };

@@ -49,7 +49,9 @@
 //!    a field existed parses with that field defaulted; a row written after it
 //!    is unchanged for readers that ignore it. `mode` is the first such field —
 //!    an old `submission` row has none, and means `servo`, which is what
-//!    [`ProgrammingMode::default`] returns.
+//!    [`ProgrammingMode::default`] returns. `scoringDigest` is the second, and
+//!    absent means "not recorded", not any particular weighting: see
+//!    [`scoring_digest`].
 //! 2. **Existing fields never change meaning.** Adding a Cutter Grid mode does
 //!    not get to redefine what `commands` counts, because two years of rows
 //!    already answer the old question and no migration can reach them.
@@ -73,9 +75,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use hcr_contract::{
-    LessonActivity, LessonEventCreate, LessonOutcome, ProgramMetrics, ScoreResult,
+    LessonActivity, LessonEventCreate, LessonOutcome, ProgramMetrics, ScoreResult, ScoringConfig,
     SubmissionResult, TerminalReason,
 };
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 
 /// Which editor produced the program a row describes.
@@ -137,6 +140,19 @@ pub enum UsageEvent {
         commands: u32,
         /// Estimated wall-clock length of the program.
         duration_ms: f64,
+        /// Which scoring block produced `final_score`. See [`scoring_digest`].
+        ///
+        /// Last in the row rather than next to `challenge_version`, which is
+        /// where it belongs by meaning: appending it leaves every field written
+        /// by an older build at the position it already had, so a diff of two
+        /// log files across this deploy shows one new key and not a reordering
+        /// of thirteen old ones.
+        ///
+        /// Absent on rows written before this existed. That means "not
+        /// recorded" — not "the current one" — and those rows have to be
+        /// resolved against `ts` and the deploy history instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scoring_digest: Option<String>,
     },
     /// An adaptive session recorded a response, moving the ability estimate.
     #[serde(rename_all = "camelCase")]
@@ -227,6 +243,64 @@ fn is_servo(mode: &ProgrammingMode) -> bool {
     mode.is_default()
 }
 
+/// A stable short name for the scoring block a submission was graded against.
+///
+/// # Why a row needs this
+///
+/// `challenge_version` was meant to answer "which rules applied to this
+/// response", and for the target it does: a new hairstyle is a new version.
+/// It does not cover the *scoring block* underneath, because nothing forces the
+/// version up when only the weighting changes. That has already happened once
+/// on the deployed catalog: `neat-short-cap` moved from a reference cost of
+/// 6.25 and a reference time of 5645 ms to 1.25 and 1000 ms, and stayed
+/// `challengeVersion: 1`. The log therefore contains rows that claim one
+/// version for two different scoring rules, and no field distinguishes them.
+///
+/// What that does and does not spoil is worth being precise about:
+///
+/// * `completion_score` is **unaffected**. It compares voxels against the
+///   target and never consults the scoring block, which is exactly why
+///   `07-CALIBRATION.md` fits difficulty on it. The calibration input survived.
+/// * `final_score` is **not comparable** across such a change — it is a
+///   weighted blend of completion, efficiency and time — and neither is the
+///   adaptive `raw_score`, which is `final_score / 100`. Ability estimates
+///   either side of a reweighting are in different units.
+///
+/// Recording what actually applied puts that boundary in the data instead of in
+/// somebody's memory of a deploy.
+///
+/// # What it is
+///
+/// The first eight bytes of SHA-256 over the six numbers of the block, each as
+/// its IEEE-754 big-endian bytes, in a fixed order. Deliberately not a hash of
+/// the serialized JSON: that would also change if a field were renamed or
+/// reordered, reporting a scoring change where there was none. Sixteen hex
+/// characters distinguish the handful of weightings a catalog ever has; it is
+/// an identity, not a security primitive, so truncation costs nothing here.
+///
+/// The digest of a block is therefore stable across builds, and two rows share
+/// one exactly when they were scored by the same numbers.
+pub fn scoring_digest(scoring: &ScoringConfig) -> String {
+    let mut hasher = Sha256::new();
+    for value in [
+        scoring.weights.completion,
+        scoring.weights.efficiency,
+        scoring.weights.time,
+        scoring.reference_program_cost,
+        scoring.reference_time_ms,
+        scoring.command_weight,
+    ] {
+        hasher.update(value.to_be_bytes());
+    }
+
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 impl UsageEvent {
     /// Build the lesson event for one reported interaction.
     ///
@@ -260,6 +334,10 @@ impl UsageEvent {
     }
 
     /// Build the submission event for a scored result.
+    ///
+    /// Takes the scoring block as well as the result because the result does
+    /// not carry it: the scores are in there, the rules that produced them are
+    /// not. See [`scoring_digest`].
     pub fn from_submission(
         ts: u64,
         player_id: Option<String>,
@@ -267,6 +345,7 @@ impl UsageEvent {
         match_id: Option<String>,
         session_id: Option<String>,
         mode: ProgrammingMode,
+        scoring: &ScoringConfig,
     ) -> Self {
         let ScoreResult {
             completion_score,
@@ -293,6 +372,7 @@ impl UsageEvent {
             blocks: source_block_count,
             commands: executed_command_count,
             duration_ms: estimated_duration_ms,
+            scoring_digest: Some(scoring_digest(scoring)),
         }
     }
 }
@@ -458,7 +538,7 @@ impl UsageLog {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProgrammingMode, UsageEvent, UsageLog};
+    use super::{ProgrammingMode, ScoringConfig, UsageEvent, UsageLog, scoring_digest};
     use std::path::PathBuf;
 
     /// Rows captured from the format written before Cutter Grid existed.
@@ -493,8 +573,20 @@ mod tests {
         // A row with no `mode` is a servo row. Defaulting it to anything else
         // would silently relabel the entire history.
         for row in &rows {
-            if let UsageEvent::Submission { mode, .. } = row {
+            if let UsageEvent::Submission {
+                mode,
+                scoring_digest,
+                ..
+            } = row
+            {
                 assert_eq!(*mode, ProgrammingMode::Servo);
+                // An absent digest must stay absent. Defaulting it to the
+                // scoring block this build happens to ship would assert that
+                // every historical row was graded by today's weighting, which
+                // for `neat-short-cap` is false for everything written before
+                // 2026-08-27 — and it would be an assertion nothing could
+                // later detect as wrong.
+                assert_eq!(*scoring_digest, None, "{row:?}");
             }
         }
     }
@@ -519,6 +611,125 @@ mod tests {
         );
     }
 
+    /// The digest separates exactly the change `challengeVersion` missed.
+    ///
+    /// These two blocks are the real ones: `neat-short-cap` shipped the first
+    /// until 2026-08-27 and the second after, both under `challengeVersion: 1`.
+    /// A reader holding rows from either side has nothing else to tell them
+    /// apart.
+    #[test]
+    fn a_reweighting_under_one_version_gets_two_digests() {
+        let before = scoring_config(6.25, 5_645.0);
+        let after = scoring_config(1.25, 1_000.0);
+
+        assert_ne!(
+            scoring_digest(&before),
+            scoring_digest(&after),
+            "the 2026-08-27 reweighting must not be invisible"
+        );
+
+        // Stable, or two rows scored by identical rules would not group.
+        assert_eq!(scoring_digest(&before), scoring_digest(&before));
+        assert_eq!(scoring_digest(&after), scoring_digest(&scoring_config(1.25, 1_000.0)));
+
+        // A name, not a number: 16 hex characters, so it survives being pasted
+        // into a query or a note.
+        let digest = scoring_digest(&after);
+        assert_eq!(digest.len(), 16, "{digest}");
+        assert!(digest.chars().all(|c| c.is_ascii_hexdigit()), "{digest}");
+    }
+
+    /// A new row is an old row plus one trailing key.
+    ///
+    /// The promise made to anyone diffing two log files across a deploy, and to
+    /// anyone reading a row by eye: fields that existed before keep the
+    /// position they had. Appending is what makes that true, so the order is
+    /// worth pinning rather than leaving to the order of a struct nobody
+    /// remembers is load-bearing.
+    #[test]
+    fn a_new_field_lands_at_the_end_and_moves_nothing() {
+        let legacy = LEGACY_ROWS.lines().next().expect("a first row");
+        let mut parsed: UsageEvent = serde_json::from_str(legacy).expect("parses");
+        if let UsageEvent::Submission { scoring_digest, .. } = &mut parsed {
+            *scoring_digest = Some(scoring_digest_of_the_current_block());
+        }
+
+        let line = serde_json::to_string(&parsed).expect("serializes");
+        let (head, tail) = line
+            .split_once(r#","scoringDigest""#)
+            .unwrap_or_else(|| panic!("digest should be the last key: {line}"));
+
+        assert_eq!(
+            format!("{head}}}"),
+            legacy,
+            "everything before the new key must be the legacy row, byte for byte"
+        );
+        assert_eq!(tail, format!(r#":"{}"}}"#, scoring_digest_of_the_current_block()));
+    }
+
+    fn scoring_digest_of_the_current_block() -> String {
+        scoring_digest(&scoring_config(1.25, 1_000.0))
+    }
+
+    /// The two digests the deployed log actually needs, pinned.
+    ///
+    /// A digest is only useful if it is the *same* digest next year: change how
+    /// it is computed and one era of rows splits into two that no longer group,
+    /// with nothing to say which is which. Pinning the literals makes that a
+    /// test failure rather than a discovery.
+    ///
+    /// Both values are documented in `docs/DEPLOY.md` §3, which is where an
+    /// analysis looks them up.
+    #[test]
+    fn the_shipped_digests_are_the_ones_the_docs_publish() {
+        assert_eq!(
+            scoring_digest(&scoring_config(6.25, 5_645.0)),
+            "2081283affc7cc7d",
+            "neat-short-cap as scored before 2026-08-27"
+        );
+        assert_eq!(
+            scoring_digest(&scoring_config(1.25, 1_000.0)),
+            "448b870304930bb7",
+            "neat-short-cap as scored now"
+        );
+    }
+
+    /// Every component is part of the identity.
+    ///
+    /// A digest that ignored one of them would report "same rules" across a
+    /// change that moves every score, which is worse than no digest: it would
+    /// be believed.
+    #[test]
+    fn every_number_in_the_block_moves_the_digest() {
+        let base = scoring_config(1.25, 1_000.0);
+        let baseline = scoring_digest(&base);
+
+        let mut heavier_completion = base.clone();
+        heavier_completion.weights.completion = 0.7;
+        heavier_completion.weights.efficiency = 0.15;
+        assert_ne!(scoring_digest(&heavier_completion), baseline);
+
+        let mut dearer_commands = base.clone();
+        dearer_commands.command_weight = 0.5;
+        assert_ne!(scoring_digest(&dearer_commands), baseline);
+
+        assert_ne!(scoring_digest(&scoring_config(1.25, 999.0)), baseline);
+        assert_ne!(scoring_digest(&scoring_config(1.3, 1_000.0)), baseline);
+    }
+
+    fn scoring_config(reference_program_cost: f64, reference_time_ms: f64) -> ScoringConfig {
+        ScoringConfig {
+            weights: hcr_contract::ScoreWeights {
+                completion: 0.6,
+                efficiency: 0.25,
+                time: 0.15,
+            },
+            reference_program_cost,
+            reference_time_ms,
+            command_weight: 0.25,
+        }
+    }
+
     /// A Cutter Grid row does carry the discriminator.
     #[test]
     fn a_cutter_grid_row_records_its_mode() {
@@ -536,6 +747,7 @@ mod tests {
             blocks: 5,
             commands: 22,
             duration_ms: 12_348.0,
+            scoring_digest: Some("0123456789abcdef".to_string()),
         };
         let line = serde_json::to_string(&event).expect("serializes");
         assert!(line.contains(r#""mode":"cutter-grid""#), "{line}");
@@ -572,6 +784,7 @@ mod tests {
             blocks: 5,
             commands: 22,
             duration_ms: 12_348.0,
+            scoring_digest: Some("0123456789abcdef".to_string()),
         };
         let line = serde_json::to_string(&event).expect("serializes");
 

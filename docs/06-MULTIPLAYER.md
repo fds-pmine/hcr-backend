@@ -77,6 +77,12 @@ enforced on every submission. Two related rules fall out of it:
 - **`MatchResults` reports the mode**, because a table of scores is only meaningful next to the task it
   ranks.
 
+Amended 2026-09-11: a Cutter Grid round is playable online. The entry is the lattice program alone
+(`SubmissionCreate.cutterGridV4`) and the server plans and scores the route with its own certified Profile,
+so nothing about the motion comes from the client — see [`08-CUTTER-GRID.md`](08-CUTTER-GRID.md) §0. Two
+limits follow, and both are enforced at *creation* rather than discovered at T0: the round's challenge must
+declare the mode, and this server must hold a Profile for it.
+
 The check reads the mode off the *scored result* — whichever engine actually produced the score — not off
 the request, so a client cannot claim one mode and submit the other.
 

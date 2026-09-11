@@ -258,6 +258,11 @@ pub struct SubmissionCreate {
     /// Set when the program was written in Cutter Grid. See `08-CUTTER-GRID.md`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cutter_grid: Option<CutterGridSubmission>,
+    /// Set when the program is a Cutter Grid route the server is to plan: the
+    /// lattice program alone, no trajectory. Mutually exclusive with
+    /// `cutter_grid`. See `08-CUTTER-GRID.md` §0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cutter_grid_v4: Option<CutterGridProgramV4>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
