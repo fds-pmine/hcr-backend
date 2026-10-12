@@ -124,6 +124,19 @@ fn incomplete_header_block_asks_for_more_bytes() {
 }
 
 #[test]
+fn an_unterminated_handshake_is_refused_past_its_cap() {
+    let mut raw = b"GET /mqtt HTTP/1.1\r\nX-Pad: ".to_vec();
+    raw.resize(16 * 1024 - 1, b'a');
+    assert_eq!(parse_request(&raw).unwrap(), None);
+
+    raw.push(b'a');
+    assert_eq!(
+        parse_request(&raw).unwrap_err(),
+        WsError::BadHandshake("header block exceeds 16 KiB")
+    );
+}
+
+#[test]
 fn malformed_handshakes_are_rejected() {
     let cases: &[(&str, &str)] = &[
         ("method must be GET", "POST /mqtt HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"),
@@ -379,8 +392,10 @@ fn one_frame_may_carry_several_mqtt_packets() {
 #[test]
 fn a_stream_delivered_one_byte_at_a_time_decodes_identically() {
     // Proves the decoder is genuinely incremental: TCP will split anywhere.
+    // Two frames, so the second is decoded after the first is dropped.
     let packet = b"\x10\x0c\x00\x04MQTT\x04\x02\x00\x3c";
-    let bytes = client_frame(BINARY, true, packet, KEY);
+    let mut bytes = client_frame(BINARY, true, &packet[..5], KEY);
+    bytes.extend(client_frame(BINARY, true, &packet[5..], KEY));
 
     let mut session = WsSession::default();
     for byte in &bytes {
@@ -470,6 +485,26 @@ fn close_frame_with_a_single_byte_payload_is_rejected() {
 fn empty_close_frame_is_allowed() {
     let bytes = client_frame(CLOSE, true, &[], KEY);
     assert_eq!(decode_all(&bytes).unwrap(), vec![Event::Close(None)]);
+}
+
+#[test]
+fn frames_after_a_close_are_not_decoded() {
+    let mut bytes = client_frame(CLOSE, true, &[], KEY);
+    bytes.extend(client_frame(BINARY, true, b"late", KEY));
+    assert_eq!(decode_all(&bytes).unwrap(), vec![Event::Close(None)]);
+
+    // Later bytes are dropped, so they never count toward max_buffer.
+    let mut decoder = Decoder::new(1024, bytes.len());
+    decoder.feed(&bytes).unwrap();
+    assert_eq!(decoder.poll().unwrap(), Some(Event::Close(None)));
+    decoder.feed(&bytes).unwrap();
+
+    let mut session = WsSession::default();
+    session.on_bytes(&bytes).unwrap();
+    session.on_bytes(&client_frame(PING, true, b"late", KEY)).unwrap();
+    assert!(session.inbound().is_empty());
+    let out = session.take_outbound();
+    assert_eq!(out.len(), 4, "only the echoed close, no pong: {out:?}");
 }
 
 #[test]

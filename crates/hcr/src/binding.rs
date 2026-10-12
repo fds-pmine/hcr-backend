@@ -47,6 +47,12 @@ pub const CUTTER_GRID_PLAN_REQUEST_MAX_BYTES: usize = 64 * 1024;
 /// not one, and this endpoint needs no authentication to append to a file.
 pub const LESSON_EVENT_REQUEST_MAX_BYTES: usize = 2 * 1024;
 
+/// Cap for every route without its own: /score on the shipped hairstyle is ~16 KB.
+const DEFAULT_REQUEST_MAX_BYTES: usize = 64 * 1024;
+
+/// Longest roster label kept from `X-HCR-Player-Name`.
+const DISPLAY_NAME_MAX_CHARS: usize = 32;
+
 /// An inbound request, already stripped of transport concerns.
 #[derive(Debug, Clone)]
 pub struct HttpCall {
@@ -68,6 +74,9 @@ pub struct HttpCall {
     /// decides only what other players read, so letting the client choose it
     /// costs nothing. Falls back to the player id when absent.
     pub display_name: Option<String>,
+    /// `X-HCR-Research-Program-And-Scores: granted`; anything but an explicit
+    /// grant writes no usage row.
+    pub research_consent: bool,
 }
 
 impl HttpCall {
@@ -79,6 +88,7 @@ impl HttpCall {
             body: Vec::new(),
             player_id: None,
             display_name: None,
+            research_consent: false,
         }
     }
 
@@ -90,6 +100,7 @@ impl HttpCall {
             body: serde_json::to_vec(&body).unwrap_or_default(),
             player_id: None,
             display_name: None,
+            research_consent: false,
         }
     }
 
@@ -221,6 +232,24 @@ impl Router {
             _ => return Err(not_found()),
         };
 
+        // shortcut: player ids limited to [A-Za-z0-9_-]{1,64}; widen when an auth layer writes subjects with '|', '@' or '.'.
+        if let Some(player) = call.player_id.as_deref() {
+            crate::service::check_client_id("X-HCR-Player", player)?;
+        }
+        // JSON decodes to ~10x its size; only the routes carrying whole programs get hotaru's 8 MiB.
+        let limit = match rest {
+            ["submissions"] | ["matches", _, "submissions"] => usize::MAX, // deploy::MAX_REQUEST_BODY_BYTES applies
+            ["cutter-grid", "plans"] => CUTTER_GRID_PLAN_REQUEST_MAX_BYTES,
+            ["usage", "lessons"] => LESSON_EVENT_REQUEST_MAX_BYTES,
+            _ => DEFAULT_REQUEST_MAX_BYTES,
+        };
+        if call.body.len() > limit {
+            return Err(ServiceError::ProgramInvalid {
+                message: format!("Request bodies on this route must not exceed {limit} bytes."),
+                field: None,
+            });
+        }
+
         let service = &self.service;
         match (call.method, rest) {
             // -- catalog --
@@ -243,14 +272,6 @@ impl Router {
 
             // -- server-side compact Cutter Grid planning, Practice only --
             (Method::Post, ["cutter-grid", "plans"]) => {
-                if call.body.len() > CUTTER_GRID_PLAN_REQUEST_MAX_BYTES {
-                    return Err(ServiceError::ProgramInvalid {
-                        message: format!(
-                            "Cutter Grid plan requests must not exceed {CUTTER_GRID_PLAN_REQUEST_MAX_BYTES} bytes."
-                        ),
-                        field: None,
-                    });
-                }
                 let request: CutterGridPlanRequestV1 = decode(&call.body)?;
                 Ok(HttpReply::ok(&service.plan_cutter_grid(request).await?))
             }
@@ -258,12 +279,16 @@ impl Router {
             // -- submissions --
             (Method::Post, ["submissions"]) => {
                 let request: SubmissionCreate = decode(&call.body)?;
-                // The player is passed for the usage log only. It grants
-                // nothing: solo scoring is the same for every caller, and on a
-                // public deployment this value is whatever the client claimed.
+                // The player goes to the usage log and scopes the idempotency
+                // key; it is still not authenticated: solo scoring is the same
+                // for every caller, and this value is whatever the client claimed.
                 Ok(HttpReply::ok(
                     &service
-                        .create_submission_for(request, call.player_id.as_deref())
+                        .create_submission_for(
+                            request,
+                            call.player_id.as_deref(),
+                            call.research_consent,
+                        )
                         .await?,
                 ))
             }
@@ -271,22 +296,16 @@ impl Router {
 
             // -- lesson telemetry, client-asserted --
             (Method::Post, ["usage", "lessons"]) => {
-                if call.body.len() > LESSON_EVENT_REQUEST_MAX_BYTES {
-                    return Err(ServiceError::ProgramInvalid {
-                        message: format!(
-                            "Lesson events must not exceed {LESSON_EVENT_REQUEST_MAX_BYTES} bytes."
-                        ),
-                        field: None,
-                    });
-                }
                 let request: LessonEventCreate = decode(&call.body)?;
                 // The player travels in the header for the same reason it does
                 // on a submission: a body that could name the player could name
                 // somebody else's. It grants nothing either way — this endpoint
                 // records a claim and returns an acknowledgement.
-                Ok(HttpReply::ok(
-                    &service.record_lesson_event(request, call.player_id.as_deref())?,
-                ))
+                Ok(HttpReply::ok(&service.record_lesson_event(
+                    request,
+                    call.player_id.as_deref(),
+                    call.research_consent,
+                )?))
             }
 
             // -- adaptive sessions --
@@ -329,11 +348,15 @@ impl Router {
                 let player = call.player_id.as_deref().ok_or(ServiceError::Internal(
                     "join requires an authenticated player",
                 ))?;
-                let display_name = call.display_name.as_deref().unwrap_or(player);
+                let display_name = call
+                    .display_name
+                    .as_deref()
+                    .map(display_label)
+                    .filter(|n| !n.is_empty());
                 Ok(HttpReply::ok(&service.join_match(
                     id,
                     player,
-                    display_name,
+                    display_name.as_deref().unwrap_or(player),
                 )?))
             }
             (Method::Post, ["matches", id, "start"]) => {
@@ -355,7 +378,9 @@ impl Router {
                 ))?;
                 let request: SubmissionCreate = decode(&call.body)?;
                 Ok(HttpReply::ok(
-                    &service.submit_to_match(id, player, request).await?,
+                    &service
+                        .submit_to_match(id, player, request, call.research_consent)
+                        .await?,
                 ))
             }
 
@@ -375,6 +400,16 @@ struct CrewAssignment {
     /// Player id to crew label. A player absent from the map is un-crewed.
     #[serde(default)]
     crews: std::collections::HashMap<String, String>,
+}
+
+/// A roster label is cosmetic, so it is cleaned rather than refused.
+fn display_label(raw: &str) -> String {
+    let visible: String = raw.chars().filter(|c| !c.is_control()).collect();
+    visible
+        .trim()
+        .chars()
+        .take(DISPLAY_NAME_MAX_CHARS)
+        .collect()
 }
 
 fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> ServiceResult<T> {

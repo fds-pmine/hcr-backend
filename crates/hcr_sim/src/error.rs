@@ -41,6 +41,13 @@ pub enum SimError {
     },
     /// The program contained no executable commands.
     EmptyProgram,
+    /// A node is outside the contract's ranges, or carries an id over `hcr_contract::MAX_ID_BYTES`.
+    InvalidNode {
+        /// Block to highlight; `None` when the id itself is oversized, so it is never echoed.
+        source_block_id: Option<String>,
+        /// Player-facing reason.
+        reason: &'static str,
+    },
     /// The challenge's scoring block is not usable.
     InvalidScoring(&'static str),
     /// The replay exceeded its tick budget — a guard against pathological input.
@@ -168,6 +175,7 @@ impl fmt::Display for SimError {
             SimError::EmptyProgram => {
                 write!(f, "The program does not contain an executable command.")
             }
+            SimError::InvalidNode { reason, .. } => write!(f, "{reason}"),
             SimError::InvalidScoring(reason) => write!(f, "{reason}"),
             SimError::CutterPlanRejected {
                 rejection, detail, ..

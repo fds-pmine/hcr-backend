@@ -35,6 +35,9 @@
 //! * **Program source.** A submitted program is a learner's work; the shape
 //!   metrics (`blocks`, `commands`) carry the analysis value without archiving
 //!   the thing itself.
+//! * **Anything without research consent.** A `submission`, `sessionResponse` or
+//!   `lesson` row is written only when the request (for a session response, the
+//!   submission it names) carried `X-HCR-Research-Program-And-Scores: granted`.
 //!
 //! # Reading logs written by an older build
 //!

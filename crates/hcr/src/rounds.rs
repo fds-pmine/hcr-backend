@@ -16,8 +16,6 @@
 //!   start.
 
 use std::collections::HashMap;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
 use std::sync::Mutex;
 
 use hmac::{Hmac, Mac};
@@ -132,6 +130,13 @@ const CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /// Length of a room code. 32⁶ ≈ 1.07 × 10⁹.
 const CODE_LEN: usize = 6;
 
+const MAX_ROUND_DURATION_MS: u64 = 2 * 60 * 60 * 1000;
+const MAX_ROOM_PLAYERS: usize = 64;
+
+/// Live rooms held at once.
+// shortcut: one global cap, above the ~7200 lobbies one client can open at the 4 r/s proxy limit in one 30 min lobby timeout; but GET polls keep lobbies alive, so one client can fill it in ~70 min and hold it (~9 GET/s), blocking room creation for everyone. Add a per-client room limit if that is ever seen.
+pub const MAX_ROOMS: usize = 16384;
+
 /// Tracks live rounds.
 #[derive(Debug)]
 pub struct MatchRegistry {
@@ -139,6 +144,7 @@ pub struct MatchRegistry {
     clock: SharedClock,
     counter: Mutex<u64>,
     /// Keys the room-code derivation. See [`MatchRegistry::derive_code`].
+    /// Per process; codes need not survive a restart.
     code_key: [u8; 32],
 }
 
@@ -149,14 +155,12 @@ impl MatchRegistry {
             rooms: Mutex::new(HashMap::new()),
             clock,
             counter: Mutex::new(0),
-            code_key: random_key(),
+            code_key: rand::random(),
         }
     }
 
     fn lock(&self) -> ServiceResult<std::sync::MutexGuard<'_, HashMap<String, Room>>> {
-        self.rooms
-            .lock()
-            .map_err(|_| ServiceError::Internal("match registry poisoned"))
+        Ok(self.rooms.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// Turn a counter value into a room code.
@@ -186,8 +190,24 @@ impl MatchRegistry {
         config: MatchConfig,
         challenge: MatchChallengeRef,
     ) -> ServiceResult<MatchState> {
+        if !(1..=MAX_ROUND_DURATION_MS).contains(&config.duration_ms) {
+            return Err(ServiceError::ProgramInvalid {
+                message: format!("A round must last 1 to {MAX_ROUND_DURATION_MS} ms."),
+                field: Some("durationMs".to_string()),
+            });
+        }
+        if !(1..=MAX_ROOM_PLAYERS).contains(&config.max_players) {
+            return Err(ServiceError::ProgramInvalid {
+                message: format!("A room holds 1 to {MAX_ROOM_PLAYERS} players."),
+                field: Some("maxPlayers".to_string()),
+            });
+        }
+
         let now = self.clock.now_ms();
         let mut rooms = self.lock()?;
+        if rooms.len() >= MAX_ROOMS {
+            return Err(ServiceError::RateLimited);
+        }
 
         // Distinct counter values can still truncate to the same six characters.
         // The counter rules out an infinite loop; the occupancy check rules out
@@ -384,7 +404,7 @@ impl MatchRegistry {
 
         room.state.phase = MatchPhase::Running;
         room.state.opens_at = Some(now);
-        room.state.closes_at = Some(now + room.state.config.duration_ms);
+        room.state.closes_at = Some(now.saturating_add(room.state.config.duration_ms));
         Ok(room.public_state(now))
     }
 
@@ -634,9 +654,10 @@ impl MatchRegistry {
     /// and every finished round kept its roster and entries forever. There is no
     /// database behind this; the map *is* the storage, so nothing reclaims it.
     ///
-    /// A **running** round is never evicted regardless of age. It settles to
-    /// `Results` on its own deadline, and dropping one mid-flight would delete a
-    /// competition in progress.
+    /// A **running** round is never evicted before its deadline: dropping one
+    /// mid-flight would delete a competition in progress. Past the deadline it
+    /// is a result nobody has read yet, so it is kept for the results retention
+    /// counted from the close, as reading it would have done.
     ///
     /// Returns the ids removed, for logging.
     pub fn evict_idle(
@@ -658,7 +679,11 @@ impl MatchRegistry {
                 // scoreboard; the retention clock restarts whenever one does.
                 MatchPhase::Results | MatchPhase::Cancelled => idle > results_retention_ms,
                 MatchPhase::Lobby | MatchPhase::Countdown => idle > lobby_idle_timeout_ms,
-                MatchPhase::Running | MatchPhase::Grading => false,
+                // Closed but unread since, so retention runs from the close.
+                MatchPhase::Running | MatchPhase::Grading => room
+                    .state
+                    .closes_at
+                    .is_some_and(|closes| now.saturating_sub(closes) > results_retention_ms),
             };
             if expired {
                 removed.push(match_id.clone());
@@ -677,20 +702,4 @@ impl MatchRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-}
-
-/// A 32-byte key, from the OS entropy `RandomState` is seeded with.
-///
-/// `RandomState::new()` draws from the platform's random source and yields a
-/// distinct key per call, which is enough for identifiers that only have to be
-/// unguessable within a process lifetime. It is deliberately **not** used for
-/// anything that must survive a restart or resist an offline attack —
-/// `ItemRefSigner`'s key is loaded from configuration for exactly that reason.
-fn random_key() -> [u8; 32] {
-    let mut key = [0u8; 32];
-    for chunk in key.chunks_mut(8) {
-        let word = RandomState::new().build_hasher().finish().to_ne_bytes();
-        chunk.copy_from_slice(&word[..chunk.len()]);
-    }
-    key
 }

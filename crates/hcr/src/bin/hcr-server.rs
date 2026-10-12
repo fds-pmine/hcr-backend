@@ -5,10 +5,14 @@
 //!
 //! ```sh
 //! HCR_SIGNING_KEY="$(openssl rand -hex 32)" \
-//! HCR_BIND=0.0.0.0:18623 \
+//! HCR_BIND=127.0.0.1:18623 \
 //! HCR_CORS_ORIGIN=https://web.hcr.rs \
 //!   hcr-server
 //! ```
+//!
+//! A fresh key per start is for a trial run only: every restart invalidates the
+//! item references already issued. A deployment reads it from
+//! `/etc/hcr-server.env`.
 //!
 //! See `docs/DEPLOY.md`, which also covers the two things this binary does
 //! **not** solve: it has no authentication layer (it trusts `X-HCR-Player` as
@@ -54,13 +58,8 @@ fn main() -> ExitCode {
         catalog.clone(),
         Arc::new(ReplayPool::with_default_concurrency()),
         ItemRefSigner::new(config.signing_key.clone()),
-        ServiceConfig {
-            // Practice sessions may synthesise a hairstyle when the pool has
-            // nothing at the right difficulty; measurement sessions never
-            // reach this.
-            generator: Some(hcr::seed::challenge_generator()),
-            ..ServiceConfig::default()
-        },
+        // shortcut: no practice generator. Generated items never reach CatalogStore, so a served one cannot be fetched or submitted (Q1), and generation runs replays on async workers (F13). Practice ends with BANK_EXHAUSTED after the pool; HCR_GENERATED_ITEMS lengthens the pool. Re-enable once generated items go to a bounded store and generation moves off the async workers.
+        ServiceConfig::default(),
     );
 
     if let Some(path) = &config.usage_log_path {

@@ -209,6 +209,46 @@ async fn resubmitting_the_same_id_returns_the_first_result() {
 }
 
 #[tokio::test]
+async fn a_submission_id_cannot_be_claimed_by_another_submitter() {
+    // F7: a bare id once returned anyone's stored result.
+    let service = default_service();
+    let session_id = service
+        .start_session(SessionStart::default())
+        .await
+        .unwrap()
+        .session_id;
+    let item = service.next_item(&session_id).await.unwrap();
+    let request = submission(
+        "sub-bob",
+        &item.challenge_id,
+        item.challenge_version,
+        safe_program(),
+    );
+
+    service
+        .create_submission_for(request.clone(), Some("bob"), true)
+        .await
+        .expect("bob's own submission");
+    assert!(matches!(
+        service.create_submission_for(request, Some("mallory"), true).await,
+        Err(ServiceError::ProgramInvalid { .. })
+    ));
+
+    let error = service
+        .respond(SessionRespond {
+            session_id: session_id.clone(),
+            item_ref: item.item_ref,
+            submission_id: "sub-bob".into(),
+        })
+        .await
+        .expect_err("scored outside this session");
+    assert_eq!(
+        error,
+        ServiceError::ItemRefInvalid("the submission was scored for another session")
+    );
+}
+
+#[tokio::test]
 async fn a_head_collision_still_produces_a_score() {
     // Halting on the safety constraint is a terminal state, not a failure: the
     // learner still gets a number, and the offending block is named.
@@ -344,6 +384,91 @@ async fn client_preview_divergence_is_reported() {
     assert_eq!(checked.score.final_score, honest.score.final_score);
 }
 
+#[tokio::test]
+async fn a_declared_block_count_below_the_program_does_not_lower_the_cost() {
+    // F8: `sourceBlockCount` is client-declared, so it may raise the cost but
+    // never lower it below the nodes the program actually has.
+    let service = default_service();
+    let program = |declared: u32| Program {
+        nodes: vec![ProgramNode::Repeat {
+            count: 2,
+            body: safe_program().nodes,
+            source_block_id: "r".into(),
+        }],
+        source_block_count: declared,
+    };
+
+    let honest = service
+        .create_submission(submission("sub-1", "easy", 1, program(2)))
+        .await
+        .unwrap();
+    let lying = service
+        .create_submission(submission("sub-2", "easy", 1, program(0)))
+        .await
+        .unwrap();
+
+    assert_eq!(lying.metrics.source_block_count, 2);
+    assert_eq!(lying.score.program_cost, honest.score.program_cost);
+
+    let cutter = CutterGridProgram {
+        kind: "cutter-grid".into(),
+        version: 1,
+        planner_version: "cutter-grid-compact-ptp-v4".into(),
+        nodes: vec![CutterGridNode::Repeat {
+            count: 2,
+            body: vec![CutterGridNode::Move {
+                direction: CutterGridDirection::Right,
+                distance: 1,
+                source_block_id: "m".into(),
+            }],
+            source_block_id: "r".into(),
+        }],
+        source_block_count: 0,
+    };
+    assert_eq!(cutter.scored_block_count(), 2);
+}
+
+#[tokio::test]
+async fn a_submission_id_outside_the_client_id_rule_is_refused() {
+    // Each id becomes a map key or a usage-log field, so it is refused before
+    // anything stores it.
+    let service = default_service();
+    let long = "x".repeat(65);
+    let with_session = |id: &str| {
+        let mut request = submission("sub-ok", "easy", 1, safe_program());
+        request.session_id = Some(id.into());
+        request
+    };
+    let with_match = |id: &str| {
+        let mut request = submission("sub-ok", "easy", 1, safe_program());
+        request.match_id = Some(id.into());
+        request
+    };
+
+    for (case, request) in [
+        ("empty id", submission("", "easy", 1, safe_program())),
+        ("oversized id", submission(&long, "easy", 1, safe_program())),
+        ("space", submission("a b", "easy", 1, safe_program())),
+        ("slash", submission("a/b", "easy", 1, safe_program())),
+        ("oversized session id", with_session(&long)),
+        ("newline in match id", with_match("a\nb")),
+    ] {
+        let error = service.create_submission(request).await.expect_err(case);
+        assert!(
+            matches!(error, ServiceError::ProgramInvalid { .. }),
+            "{case}: {error:?}"
+        );
+    }
+    assert_eq!(service.retained_submissions(), 0);
+
+    let longest = "x".repeat(64);
+    let scored = service
+        .create_submission(submission(&longest, "easy", 1, safe_program()))
+        .await
+        .expect("a 64-byte id is accepted");
+    assert_eq!(scored.status, SubmissionStatus::Completed);
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -369,12 +494,15 @@ async fn a_session_runs_end_to_end() {
 
         let submission_id = format!("sub-{answered}");
         service
-            .create_submission(submission(
-                &submission_id,
-                &item.challenge_id,
-                item.challenge_version,
-                safe_program(),
-            ))
+            .create_submission(SubmissionCreate {
+                session_id: Some(session_id.clone()),
+                ..submission(
+                    &submission_id,
+                    &item.challenge_id,
+                    item.challenge_version,
+                    safe_program(),
+                )
+            })
             .await
             .unwrap();
 
@@ -550,7 +678,10 @@ async fn a_submission_for_a_different_challenge_is_refused() {
         .find(|id| *id != item.challenge_id)
         .unwrap();
     service
-        .create_submission(submission("sub-other", other, 1, safe_program()))
+        .create_submission(SubmissionCreate {
+            session_id: Some(session_id.clone()),
+            ..submission("sub-other", other, 1, safe_program())
+        })
         .await
         .unwrap();
 
@@ -607,12 +738,15 @@ async fn sessions_are_independent() {
 
     let item = service.next_item(&a).await.unwrap();
     service
-        .create_submission(submission(
-            "sub-a",
-            &item.challenge_id,
-            item.challenge_version,
-            safe_program(),
-        ))
+        .create_submission(SubmissionCreate {
+            session_id: Some(a.clone()),
+            ..submission(
+                "sub-a",
+                &item.challenge_id,
+                item.challenge_version,
+                safe_program(),
+            )
+        })
         .await
         .unwrap();
     service
@@ -722,6 +856,7 @@ async fn usage_records_the_calibration_datum_and_no_display_name() {
         .create_submission_for(
             submission("sub-1", "easy", 1, safe_program()),
             Some("u-8f21"),
+            true,
         )
         .await
         .unwrap();
@@ -774,9 +909,77 @@ async fn usage_collection_is_off_unless_a_deployment_asks_for_it() {
 
     // No log attached: scoring still works and nothing is written anywhere.
     let result = service
-        .create_submission_for(submission("sub-1", "easy", 1, safe_program()), Some("u-1"))
+        .create_submission_for(
+            submission("sub-1", "easy", 1, safe_program()),
+            Some("u-1"),
+            true,
+        )
         .await;
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn usage_row_skipped_when_consent_declined() {
+    let dir = std::env::temp_dir().join(format!("hcr-usage-consent-{}", std::process::id()));
+    let path = dir.join("usage.jsonl");
+    let _ = std::fs::remove_file(&path);
+    let service =
+        default_service().with_usage_log(Arc::new(UsageLog::open(&path).expect("open log")));
+    let rows = || {
+        std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let session_id = service
+        .start_session(SessionStart::default())
+        .await
+        .unwrap()
+        .session_id;
+
+    // The respond request carries no consent header; its row follows the
+    // consent stored with the submission it names.
+    for (consent, expected_rows) in [(false, 0), (true, 2)] {
+        let item = service.next_item(&session_id).await.unwrap();
+        let submission_id = format!("sub-{consent}");
+        service
+            .create_submission_for(
+                SubmissionCreate {
+                    session_id: Some(session_id.clone()),
+                    ..submission(
+                        &submission_id,
+                        &item.challenge_id,
+                        item.challenge_version,
+                        safe_program(),
+                    )
+                },
+                Some("u-1"),
+                consent,
+            )
+            .await
+            .unwrap();
+        service
+            .respond(SessionRespond {
+                session_id: session_id.clone(),
+                item_ref: item.item_ref,
+                submission_id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows(), expected_rows, "consent {consent}");
+    }
+
+    let declined = service
+        .record_lesson_event(
+            lesson_event("cutter-grid-distance", 1, LessonOutcome::Opened),
+            Some("u-1"),
+            false,
+        )
+        .expect("a declined event is still validated and accepted");
+    assert!(!declined.recorded);
+    assert_eq!(rows(), 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -829,6 +1032,53 @@ async fn the_idempotency_store_is_bounded() {
     });
 }
 
+#[tokio::test]
+async fn session_ids_are_not_derivable_from_seed() {
+    // The id is the only thing gating a session, so one a classmate can
+    // compute is a session a classmate can read, answer or finalize.
+    let first_id = || async {
+        default_service()
+            .start_session(SessionStart::default())
+            .await
+            .unwrap()
+            .session_id
+    };
+    assert_ne!(first_id().await, first_id().await);
+
+    // The old formula for seed 99, ordinal 0.
+    let service = default_service();
+    service.start_session(SessionStart::default()).await.unwrap();
+    assert!(matches!(
+        service.session_snapshot("s-0000000000000063").await,
+        Err(ServiceError::SessionNotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn live_sessions_are_capped() {
+    // Anyone can open a session, and each one holds a bank snapshot until the
+    // idle sweep, so without a cap a flood ends in an OOM kill.
+    let catalog = Arc::new(CatalogStore::new());
+    catalog.insert(common::challenge("easy", 1, -1.0)).unwrap();
+    let service = HcrService::new(
+        catalog,
+        Arc::new(ReplayPool::new(2, ReplayOptions::default())),
+        ItemRefSigner::new(*b"bound-key"),
+        ServiceConfig {
+            max_live_sessions: 2,
+            ..ServiceConfig::default()
+        },
+    );
+
+    for _ in 0..2 {
+        service.start_session(SessionStart::default()).await.unwrap();
+    }
+    assert!(matches!(
+        service.start_session(SessionStart::default()).await,
+        Err(ServiceError::RateLimited)
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Lesson telemetry
 // ---------------------------------------------------------------------------
@@ -864,6 +1114,7 @@ async fn a_lesson_event_is_recorded_as_its_own_kind() {
         .record_lesson_event(
             lesson_event("cutter-grid-fixed-axes", 11, LessonOutcome::SectionPassed),
             Some("u-8f21"),
+            true,
         )
         .expect("accepted");
     assert!(ack.recorded);
@@ -918,7 +1169,7 @@ async fn a_lesson_event_that_is_not_the_shape_of_one_is_refused() {
         ),
     ] {
         let error = service
-            .record_lesson_event(request, Some("u-1"))
+            .record_lesson_event(request, Some("u-1"), true)
             .expect_err(case);
         assert!(
             matches!(error, ServiceError::ProgramInvalid { .. }),
@@ -928,7 +1179,7 @@ async fn a_lesson_event_that_is_not_the_shape_of_one_is_refused() {
 
     let mut busy = lesson_event("cutter-grid-fixed-axes", 1, LessonOutcome::Completed);
     busy.tests = Some(1_000_000);
-    assert!(service.record_lesson_event(busy, Some("u-1")).is_err());
+    assert!(service.record_lesson_event(busy, Some("u-1"), true).is_err());
 }
 
 #[tokio::test]
@@ -948,6 +1199,7 @@ async fn a_lesson_event_says_so_when_the_deployment_collects_nothing() {
         .record_lesson_event(
             lesson_event("cutter-grid-distance", 4, LessonOutcome::QuizPassed),
             None,
+            true,
         )
         .expect("accepted");
     assert!(!ack.recorded);
@@ -987,6 +1239,7 @@ async fn an_upgrade_appends_to_the_log_the_previous_build_left() {
         .create_submission_for(
             submission("sub-after-upgrade", "easy", 1, safe_program()),
             Some("u-after"),
+            true,
         )
         .await
         .unwrap();

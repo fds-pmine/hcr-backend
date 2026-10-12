@@ -8,6 +8,7 @@
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
@@ -47,15 +48,15 @@ pub const CUTTER_GRID_V4_INITIAL_SEED_BUDGET: usize = 12;
 /// One targeted V4 endpoint expansion budget.
 pub const CUTTER_GRID_V4_EXPANDED_SEED_BUDGET: usize = 48;
 /// Maximum logical commands after repeat expansion.
-pub const CUTTER_GRID_V4_MAX_LOGICAL_COMMANDS: usize = 500;
+pub const CUTTER_GRID_V4_MAX_LOGICAL_COMMANDS: usize = hcr_contract::MAX_RUNTIME_COMMANDS;
 /// The player-visible Move distance bounds.
 pub const CUTTER_GRID_V4_MIN_MOVE_DISTANCE: u32 = 1;
 /// The player-visible Move distance bounds.
-pub const CUTTER_GRID_V4_MAX_MOVE_DISTANCE: u32 = 12;
+pub const CUTTER_GRID_V4_MAX_MOVE_DISTANCE: u32 = hcr_contract::MAX_MOVE_DISTANCE;
 /// The player-visible Repeat count bounds.
 pub const CUTTER_GRID_V4_MIN_REPEAT_COUNT: u32 = 1;
 /// The player-visible Repeat count bounds.
-pub const CUTTER_GRID_V4_MAX_REPEAT_COUNT: u32 = 20;
+pub const CUTTER_GRID_V4_MAX_REPEAT_COUNT: u32 = hcr_contract::MAX_REPEAT_COUNT;
 /// The player-visible Wait duration ceiling.
 pub const CUTTER_GRID_V4_MAX_WAIT_MS: f64 = 5_000.0;
 
@@ -243,6 +244,10 @@ fn append_program_nodes(
     command_count: &mut usize,
 ) -> Result<(), CutterGridCompileErrorV4> {
     for node in nodes {
+        // Before any clone: each id is copied into every action, plan and cache key.
+        crate::program::check_id(node.source_block_id()).map_err(|_| {
+            CutterGridCompileErrorV4::new(CutterGridCompileErrorV4Code::InvalidEnvelope, None)
+        })?;
         match node {
             CutterGridNode::Repeat {
                 count,
@@ -960,6 +965,10 @@ pub const CUTTER_GRID_V4_PTP_MAX_END_EFFECTOR_SAMPLE_DISTANCE_DIVISOR: f64 = 8.0
 
 /// Refinement ceiling for one certified primitive.
 pub const CUTTER_GRID_V4_PTP_MAXIMUM_SAMPLES: u32 = 131_072;
+/// Geometry samples one plan's global search may evaluate before it gives up.
+/// About 5 s of one desktop core, 10x what the reference program spends.
+// shortcut: counts search certification only; IK, adaptive certificates and the finalize sweep are bounded per command but not counted; count them if a release profile shows they dominate.
+const CUTTER_GRID_V4_SEARCH_SAMPLE_BUDGET: usize = 400_000;
 /// Fixed upper bound on one compact PTP retiming loop.
 pub const CUTTER_GRID_V4_MAX_RETIMING_ATTEMPTS: usize = 48;
 /// Adaptive certificate starts with at least eight intervals.
@@ -1245,6 +1254,16 @@ pub fn certify_cutter_grid_sync_ptp_geometry_v4(
     challenge: &ChallengeDefinition,
     primitive: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
 ) -> Option<CutterGridPtpCertificateV4> {
+    let mut unbounded = usize::MAX;
+    certify_geometry_within_v4(challenge, primitive, &mut unbounded)
+}
+
+/// As above, but fails once `samples_left` evaluated samples have been spent.
+fn certify_geometry_within_v4(
+    challenge: &ChallengeDefinition,
+    primitive: &hcr_contract::CutterGridSyncPtpPrimitiveV4,
+    samples_left: &mut usize,
+) -> Option<CutterGridPtpCertificateV4> {
     let max_delta = challenge
         .robot_config
         .joints
@@ -1270,6 +1289,7 @@ pub fn certify_cutter_grid_sync_ptp_geometry_v4(
         let mut maximum_normalized_joint_step = 0.0_f64;
         let mut respects_end_effector_sampling = true;
         for index in 0..=sample_count {
+            *samples_left = samples_left.checked_sub(1)?;
             let sample = evaluate_cutter_grid_sync_ptp_v4(
                 challenge,
                 primitive,
@@ -1504,10 +1524,19 @@ pub fn plan_cutter_grid_v4_geometry(
     }
 
     let mut first_disconnected = 0_usize;
-    for attempt in 0..2 {
+    let mut samples_left = CUTTER_GRID_V4_SEARCH_SAMPLE_BUDGET;
+    'attempts: for attempt in 0..2 {
+        let mut cache = BTreeMap::new();
         for neighbor_limit in [4_usize, 8, usize::MAX] {
-            let search =
-                select_global_path(challenge, profile, &layers, &candidates, neighbor_limit);
+            let search = select_global_path(
+                challenge,
+                profile,
+                &layers,
+                &candidates,
+                neighbor_limit,
+                &mut cache,
+                &mut samples_left,
+            );
             if let Some(path) = search.path {
                 return Ok(build_geometry_plan(
                     compiled,
@@ -1518,8 +1547,12 @@ pub fn plan_cutter_grid_v4_geometry(
                     expanded_action_index,
                 ));
             }
-            if neighbor_limit == usize::MAX {
+            if neighbor_limit == usize::MAX || samples_left == 0 {
                 first_disconnected = search.first_disconnected_layer.unwrap_or(0);
+            }
+            // shortcut: a spent budget reports as endpoint-ptp-disconnected at the layer it stopped on; give it its own planner code once the frontend renders one
+            if samples_left == 0 {
+                break 'attempts;
             }
         }
         if attempt == 1 || expanded_action_index.is_some() {
@@ -1557,7 +1590,8 @@ pub fn plan_cutter_grid_v4_geometry(
     Err(failure)
 }
 
-/// Build a complete, dynamically certified and locally signed V4 plan.
+/// Build a complete, dynamically certified V4 plan carrying an unkeyed FNV-1a
+/// checksum (detects corruption, not forgery).
 pub fn plan_cutter_grid_v4(
     challenge: &ChallengeDefinition,
     compiled: &CutterGridV4CompiledProgram,
@@ -1744,7 +1778,9 @@ fn finalize_cutter_grid_v4_geometry_plan(
 /// function to check it agrees with itself.
 ///
 /// What is still taken from the player is the one thing that is theirs: the
-/// number of blocks they placed. Everything the score turns on — the commands
+/// number of blocks they placed, which the caller passes as
+/// [`hcr_contract::CutterGridProgram::scored_block_count`] so it is never fewer
+/// than the program's nodes. Everything the score turns on — the commands
 /// the program expanded to, the time it takes, the hair it removes — is the
 /// planner's.
 ///
@@ -1808,10 +1844,56 @@ struct PtpConnection {
 }
 
 #[derive(Debug, Clone)]
-struct CompactPath {
+struct CompactPath<'a> {
     entry_index: usize,
-    candidates: Vec<CutterGridIkCandidateV4>,
-    connections: Vec<PtpConnection>,
+    candidates: Vec<&'a CutterGridIkCandidateV4>,
+    connections: Vec<Rc<PtpConnection>>,
+    primitive_count: u32,
+    maximum_step: f64,
+    duration_ms: f64,
+    displacement_squared: f64,
+    head_clearance: f64,
+    joint_limit_margin: f64,
+}
+
+impl<'a> CompactPath<'a> {
+    fn start(
+        entry_index: usize,
+        candidate: &'a CutterGridIkCandidateV4,
+        connection: Rc<PtpConnection>,
+    ) -> Self {
+        let mut path = CompactPath {
+            entry_index,
+            candidates: Vec::new(),
+            connections: Vec::new(),
+            primitive_count: 0,
+            maximum_step: 0.0,
+            duration_ms: 0.0,
+            displacement_squared: 0.0,
+            head_clearance: f64::INFINITY,
+            joint_limit_margin: f64::INFINITY,
+        };
+        path.push(candidate, connection);
+        path
+    }
+
+    /// Extend by one layer, keeping the totals in the order `compare_path` once folded them.
+    fn push(&mut self, candidate: &'a CutterGridIkCandidateV4, connection: Rc<PtpConnection>) {
+        self.primitive_count += connection.primitive_count;
+        self.maximum_step = self
+            .maximum_step
+            .max(connection.maximum_normalized_joint_step);
+        for primitive in &connection.primitives {
+            self.duration_ms += primitive.duration_ms;
+        }
+        self.displacement_squared += connection.displacement_squared;
+        self.head_clearance = self.head_clearance.min(connection.minimum_head_clearance);
+        self.joint_limit_margin = self
+            .joint_limit_margin
+            .min(connection.minimum_joint_limit_margin);
+        self.candidates.push(candidate);
+        self.connections.push(connection);
+    }
 }
 
 fn validate_profile(
@@ -1994,20 +2076,23 @@ fn candidates_for_layer(
 }
 
 #[derive(Debug, Clone)]
-struct GlobalPathSearchV4 {
-    path: Option<CompactPath>,
+struct GlobalPathSearchV4<'a> {
+    path: Option<CompactPath<'a>>,
     first_disconnected_layer: Option<usize>,
 }
 
-fn select_global_path(
+type ConnectionCache = BTreeMap<String, Option<Rc<PtpConnection>>>;
+
+fn select_global_path<'a>(
     challenge: &ChallengeDefinition,
     profile: &hcr_contract::CutterGridProfileV4,
     layers: &[EndpointLayer],
-    candidates: &[Vec<CutterGridIkCandidateV4>],
+    candidates: &'a [Vec<CutterGridIkCandidateV4>],
     neighbor_limit: usize,
-) -> GlobalPathSearchV4 {
-    let mut active: BTreeMap<String, CompactPath> = BTreeMap::new();
-    let mut cache = BTreeMap::<String, Option<PtpConnection>>::new();
+    cache: &mut ConnectionCache,
+    samples_left: &mut usize,
+) -> GlobalPathSearchV4<'a> {
+    let mut active: BTreeMap<String, CompactPath<'a>> = BTreeMap::new();
     let Some(first_layer) = candidates.first() else {
         return GlobalPathSearchV4 {
             path: None,
@@ -2027,24 +2112,28 @@ fn select_global_path(
             &challenge.robot_config.joints,
             neighbor_limit,
         ) {
-            let Some(connection) = connect_candidates(
+            let connection = connect_candidates(
                 challenge,
                 profile,
                 &entry.id,
                 &entry.joint_angles,
                 &candidate.id,
                 &candidate.joint_angles,
-                &mut cache,
-            ) else {
+                cache,
+                samples_left,
+            );
+            if *samples_left == 0 {
+                return GlobalPathSearchV4 {
+                    path: None,
+                    first_disconnected_layer: Some(0),
+                };
+            }
+            let Some(connection) = connection else {
                 continue;
             };
             accept_path(
                 &mut active,
-                CompactPath {
-                    entry_index,
-                    candidates: vec![candidate.clone()],
-                    connections: vec![connection],
-                },
+                CompactPath::start(entry_index, candidate, connection),
                 &challenge.robot_config.joints,
             );
         }
@@ -2076,20 +2165,28 @@ fn select_global_path(
                 &challenge.robot_config.joints,
                 neighbor_limit,
             ) {
-                let Some(connection) = connect_candidates(
+                let connection = connect_candidates(
                     challenge,
                     profile,
                     &previous.id,
                     &previous.joint_angles,
                     &candidate.id,
                     &candidate.joint_angles,
-                    &mut cache,
-                ) else {
+                    cache,
+                    samples_left,
+                );
+                if *samples_left == 0 {
+                    return GlobalPathSearchV4 {
+                        path: None,
+                        first_disconnected_layer: Some(layer_index),
+                    };
+                }
+                let Some(connection) = connection else {
                     continue;
                 };
+                // shortcut: copies two pointer Vecs per expansion (O(L)); switch to parent links if plans near the 500-command cap get slow
                 let mut next_path = path.clone();
-                next_path.candidates.push(candidate.clone());
-                next_path.connections.push(connection);
+                next_path.push(candidate, connection);
                 accept_path(&mut next, next_path, &challenge.robot_config.joints);
             }
         }
@@ -2109,6 +2206,7 @@ fn select_global_path(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn connect_candidates(
     challenge: &ChallengeDefinition,
     profile: &hcr_contract::CutterGridProfileV4,
@@ -2116,14 +2214,16 @@ fn connect_candidates(
     start: &BTreeMap<JointId, f64>,
     end_id: &str,
     end: &BTreeMap<JointId, f64>,
-    cache: &mut BTreeMap<String, Option<PtpConnection>>,
-) -> Option<PtpConnection> {
+    cache: &mut ConnectionCache,
+    samples_left: &mut usize,
+) -> Option<Rc<PtpConnection>> {
     let key = format!("{start_id}>{end_id}");
     if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }
-    let direct = direct_connection(challenge, start, end)
-        .or_else(|| single_roadmap_detour(challenge, profile, start, end));
+    let direct = direct_connection(challenge, start, end, samples_left)
+        .or_else(|| single_roadmap_detour(challenge, profile, start, end, samples_left))
+        .map(Rc::new);
     cache.insert(key, direct.clone());
     direct
 }
@@ -2132,9 +2232,10 @@ fn direct_connection(
     challenge: &ChallengeDefinition,
     start: &BTreeMap<JointId, f64>,
     end: &BTreeMap<JointId, f64>,
+    samples_left: &mut usize,
 ) -> Option<PtpConnection> {
     let primitive = create_cutter_grid_sync_ptp_primitive_v4(challenge, start, end);
-    let certificate = certify_cutter_grid_sync_ptp_geometry_v4(challenge, &primitive)?;
+    let certificate = certify_geometry_within_v4(challenge, &primitive, samples_left)?;
     Some(PtpConnection {
         primitives: vec![primitive],
         primitive_count: 1,
@@ -2155,19 +2256,10 @@ fn single_roadmap_detour(
     profile: &hcr_contract::CutterGridProfileV4,
     start: &BTreeMap<JointId, f64>,
     end: &BTreeMap<JointId, f64>,
+    samples_left: &mut usize,
 ) -> Option<PtpConnection> {
-    let mut nodes = profile
-        .roadmap
-        .nodes
-        .iter()
-        .filter(|node| {
-            profile
-                .roadmap
-                .edges
-                .iter()
-                .any(|edge| edge.from_node_id == node.id || edge.to_node_id == node.id)
-        })
-        .collect::<Vec<_>>();
+    // validate_profile guarantees 8 outgoing edges per node
+    let mut nodes = profile.roadmap.nodes.iter().collect::<Vec<_>>();
     nodes.sort_by(|left, right| {
         let left_distance =
             normalized_joint_distance_v4(start, &left.joint_angles, &challenge.robot_config.joints)
@@ -2188,10 +2280,12 @@ fn single_roadmap_detour(
         compare_number(left_distance, right_distance).then_with(|| left.id.cmp(&right.id))
     });
     for node in nodes {
-        let Some(first) = direct_connection(challenge, start, &node.joint_angles) else {
+        let Some(first) = direct_connection(challenge, start, &node.joint_angles, samples_left)
+        else {
             continue;
         };
-        let Some(second) = direct_connection(challenge, &node.joint_angles, end) else {
+        let Some(second) = direct_connection(challenge, &node.joint_angles, end, samples_left)
+        else {
             continue;
         };
         return Some(PtpConnection {
@@ -2230,9 +2324,9 @@ fn nearest_candidates<'a>(
     ordered
 }
 
-fn accept_path(
-    states: &mut BTreeMap<String, CompactPath>,
-    path: CompactPath,
+fn accept_path<'a>(
+    states: &mut BTreeMap<String, CompactPath<'a>>,
+    path: CompactPath<'a>,
     joints: &[JointConfig],
 ) {
     let key = format!(
@@ -2252,75 +2346,13 @@ fn accept_path(
 }
 
 fn compare_path(left: &CompactPath, right: &CompactPath, joints: &[JointConfig]) -> Ordering {
-    let left_primitives = left
-        .connections
-        .iter()
-        .map(|connection| connection.primitive_count)
-        .sum::<u32>();
-    let right_primitives = right
-        .connections
-        .iter()
-        .map(|connection| connection.primitive_count)
-        .sum::<u32>();
-    let left_max_step = left.connections.iter().fold(0.0_f64, |max, connection| {
-        max.max(connection.maximum_normalized_joint_step)
-    });
-    let right_max_step = right.connections.iter().fold(0.0_f64, |max, connection| {
-        max.max(connection.maximum_normalized_joint_step)
-    });
-    let left_duration = left
-        .connections
-        .iter()
-        .flat_map(|connection| connection.primitives.iter())
-        .map(|primitive| primitive.duration_ms)
-        .sum::<f64>();
-    let right_duration = right
-        .connections
-        .iter()
-        .flat_map(|connection| connection.primitives.iter())
-        .map(|primitive| primitive.duration_ms)
-        .sum::<f64>();
-    let left_displacement = left
-        .connections
-        .iter()
-        .map(|connection| connection.displacement_squared)
-        .sum::<f64>();
-    let right_displacement = right
-        .connections
-        .iter()
-        .map(|connection| connection.displacement_squared)
-        .sum::<f64>();
-    let left_clearance = left
-        .connections
-        .iter()
-        .fold(f64::INFINITY, |min, connection| {
-            min.min(connection.minimum_head_clearance)
-        });
-    let right_clearance = right
-        .connections
-        .iter()
-        .fold(f64::INFINITY, |min, connection| {
-            min.min(connection.minimum_head_clearance)
-        });
-    let left_margin = left
-        .connections
-        .iter()
-        .fold(f64::INFINITY, |min, connection| {
-            min.min(connection.minimum_joint_limit_margin)
-        });
-    let right_margin = right
-        .connections
-        .iter()
-        .fold(f64::INFINITY, |min, connection| {
-            min.min(connection.minimum_joint_limit_margin)
-        });
-    left_primitives
-        .cmp(&right_primitives)
-        .then_with(|| compare_number(left_max_step, right_max_step))
-        .then_with(|| compare_number(left_duration, right_duration))
-        .then_with(|| compare_number(left_displacement, right_displacement))
-        .then_with(|| compare_number(right_clearance, left_clearance))
-        .then_with(|| compare_number(right_margin, left_margin))
+    left.primitive_count
+        .cmp(&right.primitive_count)
+        .then_with(|| compare_number(left.maximum_step, right.maximum_step))
+        .then_with(|| compare_number(left.duration_ms, right.duration_ms))
+        .then_with(|| compare_number(left.displacement_squared, right.displacement_squared))
+        .then_with(|| compare_number(right.head_clearance, left.head_clearance))
+        .then_with(|| compare_number(right.joint_limit_margin, left.joint_limit_margin))
         .then_with(|| left.entry_index.cmp(&right.entry_index))
         .then_with(|| {
             left.candidates
@@ -2820,6 +2852,10 @@ fn adaptive_ptp_visit_v4(
     depth: usize,
     output: &mut Vec<CutterGridPtpSampleV4>,
 ) -> Result<(), PtpCertificateFailureV4> {
+    // shortcut: per primitive only; a plan may run ~1001x this in finalize
+    if output.len() > CUTTER_GRID_V4_PTP_MAXIMUM_SAMPLES as usize {
+        return Err(PtpCertificateFailureV4::SamplingLimit);
+    }
     let middle_time = (start.time_ms + end.time_ms) / 2.0;
     let middle = evaluate_cutter_grid_sync_ptp_v4(challenge, primitive, middle_time)
         .ok_or(PtpCertificateFailureV4::SamplingLimit)?;
@@ -3273,7 +3309,8 @@ fn stable_plan_signature_v4(
     plan: &hcr_contract::CutterTrajectoryPlanV4,
 ) -> Result<String, serde_json::Error> {
     let mut unsigned = plan.clone();
-    // Rust's V4 integrity signature is intentionally implementation-local.
+    // Rust's V4 "signature" is an unkeyed FNV-1a checksum (detects corruption,
+    // not forgery) and is intentionally implementation-local.
     // Emptying the self field gives a stable canonical preimage without claiming
     // byte-for-byte JSON compatibility with the TypeScript Worker.
     unsigned.trajectory_signature.clear();
@@ -3488,6 +3525,34 @@ mod tests {
     }
 
     #[test]
+    fn compiler_rejects_bad_repeats_and_oversized_ids() {
+        let step = |id: &str| CutterGridNode::Move {
+            direction: CutterGridDirection::Right,
+            distance: 1,
+            source_block_id: id.into(),
+        };
+        let repeat = |count, body| CutterGridNode::Repeat {
+            count,
+            body,
+            source_block_id: "repeat".into(),
+        };
+        let compile = |node| compile_cutter_grid_program_v4(&program(vec![node]));
+
+        for count in [0, 21] {
+            let error = compile(repeat(count, vec![step("move")])).expect_err("count fails");
+            assert_eq!(error.code, CutterGridCompileErrorV4Code::InvalidRepeat);
+        }
+        let empty = compile(repeat(2, vec![])).expect_err("empty body fails");
+        assert_eq!(empty.code, CutterGridCompileErrorV4Code::EmptyRepeat);
+
+        let long = compile(step(&"x".repeat(hcr_contract::MAX_ID_BYTES + 1)))
+            .expect_err("a 65-byte id fails");
+        assert_eq!(long.code, CutterGridCompileErrorV4Code::InvalidEnvelope);
+        assert_eq!(long.source_block_id, None);
+        compile(step(&"x".repeat(hcr_contract::MAX_ID_BYTES))).expect("a 64-byte id compiles");
+    }
+
+    #[test]
     fn logical_coordinate_conversion_uses_profile_origin_and_voxel_spacing() {
         let config = VoxelConfig {
             origin: [1.0, 2.0, 3.0],
@@ -3538,6 +3603,18 @@ mod tests {
         assert_eq!(start.joint_angles, angles);
         assert_eq!(end.joint_angles, angles);
         assert!(certify_cutter_grid_sync_ptp_geometry_v4(&challenge, &primitive).is_some());
+    }
+
+    #[test]
+    fn geometry_certification_spends_its_sample_budget_and_stops_when_spent() {
+        let challenge = shipped_challenge();
+        let angles = initial_angles(&challenge.robot_config.joints);
+        let primitive = create_cutter_grid_sync_ptp_primitive_v4(&challenge, &angles, &angles);
+
+        let mut left = 10;
+        assert!(certify_geometry_within_v4(&challenge, &primitive, &mut left).is_some());
+        assert_eq!(left, 8, "a zero-length primitive evaluates its two endpoints");
+        assert!(certify_geometry_within_v4(&challenge, &primitive, &mut 1).is_none());
     }
 
     #[test]

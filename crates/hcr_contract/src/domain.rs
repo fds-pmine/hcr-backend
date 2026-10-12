@@ -368,8 +368,24 @@ pub enum ProgramNode {
 pub struct Program {
     /// Top-level nodes.
     pub nodes: Vec<ProgramNode>,
-    /// Enabled, non-shadow block count in the source workspace.
+    /// Enabled, non-shadow block count in the source workspace, as the client
+    /// declares it. Scoring uses [`Program::scored_block_count`].
     pub source_block_count: u32,
+}
+
+impl Program {
+    /// Blocks the score charges for: the declared count, never fewer than the IR nodes.
+    pub fn scored_block_count(&self) -> u32 {
+        fn count(nodes: &[ProgramNode]) -> u32 {
+            nodes.iter().fold(0u32, |n, node| {
+                n.saturating_add(match node {
+                    ProgramNode::Repeat { body, .. } => 1u32.saturating_add(count(body)),
+                    _ => 1,
+                })
+            })
+        }
+        self.source_block_count.max(count(&self.nodes))
+    }
 }
 
 /// Why a run stopped.

@@ -66,8 +66,9 @@ pub struct ClientPreview {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmissionCreate {
-    /// Client-generated ULID. The idempotency key: resubmitting returns the
-    /// first result rather than re-scoring.
+    /// Client-generated ULID. The idempotency key: resubmitting by the same
+    /// submitter (player, session) for the same challenge returns the first
+    /// result rather than re-scoring; any other reuse is `PROGRAM_INVALID`.
     pub submission_id: String,
     /// Which challenge.
     pub challenge_id: String,
@@ -112,7 +113,8 @@ pub struct SubmissionCreate {
     /// (`docs/08-CUTTER-GRID.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cutter_grid_v4: Option<crate::cutter::CutterGridProgramV4>,
-    /// Set when this submission belongs to an adaptive session.
+    /// Set when this submission belongs to an adaptive session; required for
+    /// it to be answered via `session.respond`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Set when it belongs to a competitive round.
@@ -223,7 +225,8 @@ pub struct SessionStart {
     ///
     /// A practice session drops that restriction. It may serve provisional
     /// items and, where a generator is attached, synthesise new ones on demand,
-    /// so it never runs out. The θ it reports is **not** an authoritative
+    /// so it runs out only when no generator is attached; hcr-server attaches
+    /// none, so practice ends with `BANK_EXHAUSTED`. The θ it reports is **not** an authoritative
     /// measurement and callers must not persist it as one.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub practice: bool,
@@ -422,9 +425,9 @@ pub struct LessonEventCreate {
 /// Acknowledgement for a recorded lesson event.
 ///
 /// `recorded` is false when the deployment collects no usage at all, which is
-/// the default. The client does nothing either way — it is fire-and-forget — but
-/// a false here is how an operator checking by hand learns the log is off rather
-/// than broken.
+/// the default, or when the request did not carry research consent. The client
+/// does nothing either way — it is fire-and-forget — but a false here is how an
+/// operator checking by hand learns the log is off rather than broken.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LessonEventAck {

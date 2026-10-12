@@ -225,6 +225,58 @@ fn an_empty_program_is_refused() {
     ));
 }
 
+/// V2 takes V4's ranges, so a huge count or distance never reaches the loop.
+#[test]
+fn expansion_refuses_out_of_contract_moves_repeats_and_ids() {
+    let expand = |node: CutterGridNode| {
+        let program = CutterGridProgram {
+            kind: "cutter-grid".into(),
+            version: 1,
+            planner_version: CUTTER_GRID_LADDER_PLANNER_VERSION.into(),
+            nodes: vec![node],
+            source_block_count: 1,
+        };
+        expand_cutter_program(&program, MAX_RUNTIME_COMMANDS)
+    };
+    let step = |distance, id: &str| CutterGridNode::Move {
+        direction: CutterGridDirection::Right,
+        distance,
+        source_block_id: id.into(),
+    };
+    let repeat = |count, body| CutterGridNode::Repeat {
+        count,
+        body,
+        source_block_id: "r".into(),
+    };
+
+    for node in [
+        step(0, "m"),
+        step(13, "m"),
+        repeat(0, vec![step(1, "m")]),
+        repeat(21, vec![step(1, "m")]),
+        repeat(u32::MAX, vec![]),
+    ] {
+        assert!(
+            matches!(
+                expand(node.clone()),
+                Err(SimError::InvalidNode {
+                    source_block_id: Some(_),
+                    ..
+                })
+            ),
+            "{node:?} should be refused with a block to highlight"
+        );
+    }
+    assert!(matches!(
+        expand(step(1, &"x".repeat(MAX_ID_BYTES + 1))),
+        Err(SimError::InvalidNode {
+            source_block_id: None,
+            ..
+        })
+    ));
+    assert_eq!(expand(step(1, &"x".repeat(MAX_ID_BYTES))).unwrap().len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Tampering — one broken claim per test
 // ---------------------------------------------------------------------------
@@ -292,6 +344,16 @@ fn a_step_that_contradicts_its_program_direction_is_refused() {
 fn skipping_a_cell_is_refused() {
     let mut json = submission_json();
     json["plan"]["steps"][0]["endCoord"] = serde_json::json!([-2, 0, 0]);
+
+    let (rejection, _) = expect_rejection(&from_json(json));
+    assert_eq!(rejection, CutterRejection::CoordDiscontinuity);
+}
+
+/// Q10: `i32::MAX - (-1)` once overflowed, a panic in debug builds.
+#[test]
+fn an_end_coord_at_the_i32_edge_is_refused_not_overflowed() {
+    let mut json = submission_json();
+    json["plan"]["steps"][1]["endCoord"] = serde_json::json!([i32::MAX, 0, 0]);
 
     let (rejection, _) = expect_rejection(&from_json(json));
     assert_eq!(rejection, CutterRejection::CoordDiscontinuity);

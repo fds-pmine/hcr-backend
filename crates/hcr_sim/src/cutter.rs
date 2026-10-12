@@ -53,14 +53,15 @@ use hcr_contract::{
     CUTTER_GRID_LADDER_PLANNER_VERSION, CUTTER_TRAJECTORY_PLAN_VERSION, ChallengeDefinition,
     CutterGridAction, CutterGridCoord, CutterGridDirection, CutterGridNode, CutterGridProgram,
     CutterGridSubmission, CutterTrajectoryPlan, CutterTrajectoryStep, CutterTrajectoryStepKind,
-    CutterTrajectoryWaypoint, MAX_RUNTIME_COMMANDS, ProgramMetrics, Terminal, Vec3,
-    cutter_grid_challenge_signature_v2,
+    CutterTrajectoryWaypoint, MAX_MOVE_DISTANCE, MAX_REPEAT_COUNT, MAX_RUNTIME_COMMANDS,
+    ProgramMetrics, Terminal, Vec3, cutter_grid_challenge_signature_v2,
 };
 
 use crate::collision::find_robot_head_collision;
 use crate::engine::ReplayOutcome;
 use crate::error::{CutterRejection, SimError};
 use crate::kinematics::compute_robot_pose;
+use crate::program::check_id;
 use crate::scoring::calculate_score;
 use crate::state::JointAngles;
 use crate::voxel::{VoxelSet, find_swept_voxel_hits, result_voxels_hash};
@@ -209,7 +210,7 @@ pub fn verify_and_replay(
 
     let target: VoxelSet = challenge.target_hair.voxels.iter().copied().collect();
     let metrics = ProgramMetrics {
-        source_block_count: program.source_block_count,
+        source_block_count: program.scored_block_count(),
         // Server's own expansion, never the client's count.
         executed_command_count: u32::try_from(actions.len())
             .map_err(|_| SimError::Internal("action count exceeds u32"))?,
@@ -239,8 +240,9 @@ pub fn verify_and_replay(
 ///
 /// # Errors
 /// [`SimError::CommandLimitExceeded`] past `limit`, [`SimError::EmptyProgram`]
-/// for a program with nothing in it, and [`SimError::InvalidWait`] for a
-/// negative or non-finite duration.
+/// for a program with nothing in it, [`SimError::InvalidWait`] for a
+/// negative or non-finite duration, and [`SimError::InvalidNode`] for a move or
+/// repeat outside the contract's ranges or a block id over `MAX_ID_BYTES`.
 pub fn expand_cutter_program(
     program: &CutterGridProgram,
     limit: usize,
@@ -259,12 +261,19 @@ fn expand_nodes(
     out: &mut Vec<CutterGridAction>,
 ) -> Result<(), SimError> {
     for node in nodes {
+        check_id(node.source_block_id())?;
         match node {
             CutterGridNode::Move {
                 direction,
                 distance,
                 source_block_id,
             } => {
+                if !(1..=MAX_MOVE_DISTANCE).contains(distance) {
+                    return Err(SimError::InvalidNode {
+                        source_block_id: Some(source_block_id.clone()),
+                        reason: "A move travels 1 to 12 cells.",
+                    });
+                }
                 for _ in 0..*distance {
                     push_action(
                         out,
@@ -294,7 +303,17 @@ fn expand_nodes(
                     },
                 )?;
             }
-            CutterGridNode::Repeat { count, body, .. } => {
+            CutterGridNode::Repeat {
+                count,
+                body,
+                source_block_id,
+            } => {
+                if body.is_empty() || !(1..=MAX_REPEAT_COUNT).contains(count) {
+                    return Err(SimError::InvalidNode {
+                        source_block_id: Some(source_block_id.clone()),
+                        reason: "A repeat runs 1 to 20 times and must contain a block.",
+                    });
+                }
                 for _ in 0..*count {
                     expand_nodes(body, limit, out)?;
                 }
@@ -894,7 +913,11 @@ fn compare_with_client(
 }
 
 fn direction_between(start: CutterGridCoord, end: CutterGridCoord) -> Option<CutterGridDirection> {
-    let delta = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    let delta = [
+        end[0].checked_sub(start[0])?,
+        end[1].checked_sub(start[1])?,
+        end[2].checked_sub(start[2])?,
+    ];
     [
         CutterGridDirection::Right,
         CutterGridDirection::Left,

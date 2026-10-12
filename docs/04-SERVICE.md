@@ -7,7 +7,7 @@ hcr-backend/                    # cargo workspace
 ├── hcr_contract/               # DTOs + serde          [no_std + alloc]
 ├── hcr_sim/                    # deterministic engine   [no_std + alloc]
 │     kinematics, head collision, voxel sweep, scoring, IR interpreter
-├── hcr_ws/                     # RFC 6455 ConnStream for hotaru   [std]
+├── hcr_ws/                     # RFC 6455 framing, sans-io; ConnStream adapter not written   [no_std + alloc]
 ├── hcr_qbank/                  # arona integration      [std]
 │     HcrDynamicBank, ChallengeContent, difficulty model, calibration
 ├── hcr/                # the hotaru app         [std, tokio]
@@ -210,7 +210,7 @@ Minimum viable signals, each tied to a failure this design anticipates:
 | `item_residual` per item | Calibration drift → retirement |
 | `session_se_at_termination` | Whether the bank actually covers the θ range |
 | `device_offline_transitions` | Flaky Wi-Fi on the arm, LWT storms |
-| `bank_exhausted_total` | Generation failing to keep up with demand |
+| `bank_exhausted_total` | Practice or measurement reaching the end of the pool |
 
 ## 10. Build and dependency notes
 

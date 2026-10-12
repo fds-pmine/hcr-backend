@@ -233,7 +233,7 @@ async fn a_cutter_grid_round_accepts_a_cutter_grid_submission() {
     let mut request = cutter_submission("r-1");
     request.match_id = Some(state.match_id.clone());
     let ack = service
-        .submit_to_match(&state.match_id, "p1", request)
+        .submit_to_match(&state.match_id, "p1", request, true)
         .await
         .expect("submit");
 
@@ -255,7 +255,7 @@ async fn a_servo_round_refuses_a_cutter_grid_submission() {
     let mut request = cutter_submission("r-2");
     request.match_id = Some(state.match_id.clone());
     let ack = service
-        .submit_to_match(&state.match_id, "p1", request)
+        .submit_to_match(&state.match_id, "p1", request, true)
         .await
         .expect("submit");
 
@@ -282,7 +282,7 @@ async fn a_cutter_grid_round_refuses_a_servo_submission() {
     let mut request = servo_submission("r-3", "neat-short-cap");
     request.match_id = Some(state.match_id.clone());
     let ack = service
-        .submit_to_match(&state.match_id, "p1", request)
+        .submit_to_match(&state.match_id, "p1", request, true)
         .await
         .expect("submit");
 
@@ -367,7 +367,7 @@ async fn results_report_the_round_mode() {
     let mut request = cutter_submission("r-4");
     request.match_id = Some(state.match_id.clone());
     let ack = service
-        .submit_to_match(&state.match_id, "p1", request)
+        .submit_to_match(&state.match_id, "p1", request, true)
         .await
         .expect("submit");
     assert!(ack.accepted);
@@ -409,7 +409,7 @@ async fn a_cutter_grid_round_accepts_a_server_planned_program() {
     let mut request = cutter_v4_submission("v4-1");
     request.match_id = Some(state.match_id.clone());
     let ack = service
-        .submit_to_match(&state.match_id, "p1", request)
+        .submit_to_match(&state.match_id, "p1", request, true)
         .await
         .expect("submit");
     assert!(ack.accepted, "a V4 program is an entry in a Cutter Grid round");
@@ -543,10 +543,9 @@ async fn a_cutter_grid_session_refuses_a_servo_response() {
         .await
         .expect("an item");
 
-    service
-        .create_submission(servo_submission("s-1", &item.challenge_id))
-        .await
-        .expect("scores");
+    let mut request = servo_submission("s-1", &item.challenge_id);
+    request.session_id = Some(snapshot.session_id.clone());
+    service.create_submission(request).await.expect("scores");
 
     let error = service
         .respond(SessionRespond {
@@ -644,7 +643,8 @@ async fn a_servo_session_still_sees_servo_only_items() {
             .next_item(&snapshot.session_id)
             .await
             .expect("an item");
-        let request = servo_submission(&format!("d-{}", seen.len()), &item.challenge_id);
+        let mut request = servo_submission(&format!("d-{}", seen.len()), &item.challenge_id);
+        request.session_id = Some(snapshot.session_id.clone());
         let id = request.submission_id.clone();
         service.create_submission(request).await.expect("scores");
         service
@@ -662,4 +662,19 @@ async fn a_servo_session_still_sees_servo_only_items() {
         seen.iter().any(|id| id == "servo-only"),
         "a servo session should reach the servo-only item: {seen:?}",
     );
+}
+
+/// The search refactors (sample budget, cheap path copies) must not change
+/// which plan wins: the reference program's plan stays bit-identical.
+#[test]
+fn v4_reference_plan_is_unchanged_by_search_refactors() {
+    let vectors: serde_json::Value = serde_json::from_str(VECTORS).expect("vectors parse");
+    let challenge: ChallengeDefinition =
+        serde_json::from_value(vectors["challenge"].clone()).expect("challenge parses");
+    let compiled =
+        hcr_sim::compile_cutter_grid_program_v4(&reference_program_v4()).expect("compiles");
+    let plan = hcr_sim::plan_cutter_grid_v4(&challenge, &compiled, &bundled_profile_v4())
+        .expect("the reference program plans");
+    // re-record when the bundled Profile or CUTTER_GRID_COMPACT_PTP_PLANNER_VERSION changes
+    assert_eq!(plan.trajectory_signature, "66c79bd1b937933d");
 }

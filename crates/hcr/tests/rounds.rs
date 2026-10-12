@@ -213,6 +213,7 @@ async fn submissions_are_accepted_before_the_deadline_and_refused_after() {
             &state.match_id,
             "alice",
             submission("sub-1", "easy", 1, safe_program()),
+            true,
         )
         .await
         .unwrap();
@@ -226,6 +227,7 @@ async fn submissions_are_accepted_before_the_deadline_and_refused_after() {
             &state.match_id,
             "alice",
             submission("sub-2", "easy", 1, safe_program()),
+            true,
         )
         .await
         .unwrap();
@@ -250,6 +252,7 @@ async fn an_acknowledgement_never_carries_a_score() {
             &state.match_id,
             "alice",
             submission("sub-1", "easy", 1, safe_program()),
+            true,
         )
         .await
         .unwrap();
@@ -273,6 +276,7 @@ async fn results_become_available_once_the_deadline_passes() {
             &state.match_id,
             "alice",
             submission("sub-1", "easy", 1, safe_program()),
+            true,
         )
         .await
         .unwrap();
@@ -309,6 +313,7 @@ async fn a_rematch_keeps_the_room_and_its_roster_and_clears_the_last_round() {
             &state.match_id,
             "alice",
             submission("sub-1", &first_challenge.challenge.id, 1, safe_program()),
+            true,
         )
         .await
         .unwrap();
@@ -463,6 +468,22 @@ async fn crews_cannot_be_changed_once_the_round_is_under_way() {
 }
 
 #[tokio::test]
+async fn crew_labels_are_bounded() {
+    // Every poll echoes each player's crew, so an unbounded label is retained
+    // per room and re-sent to everybody.
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+    let state = service.create_match(config(60_000)).unwrap();
+    service.join_match(&state.match_id, "alice", "Alice").unwrap();
+    let crews = std::collections::HashMap::from([("alice".to_string(), "x".repeat(65))]);
+
+    assert!(matches!(
+        service.set_match_crews(&state.match_id, &crews),
+        Err(ServiceError::ProgramInvalid { field: Some(field), .. }) if field == "crews"
+    ));
+}
+
+#[tokio::test]
 async fn a_rejoining_player_keeps_the_crew_they_were_put_in() {
     let clock = ManualClock::new(T0);
     let service = service_at(&clock, 600_000);
@@ -541,6 +562,7 @@ async fn a_non_participant_cannot_submit() {
             &state.match_id,
             "mallory",
             submission("sub-x", "easy", 1, safe_program()),
+            true,
         )
         .await
         .unwrap();
@@ -561,6 +583,7 @@ async fn submissions_for_another_challenge_are_refused() {
             &state.match_id,
             "alice",
             submission("sub-w", "hard", 1, safe_program()),
+            true,
         )
         .await
         .unwrap();
@@ -914,7 +937,7 @@ fn finished_and_abandoned_rounds_are_reclaimed_but_running_ones_are_not() {
     let open = || {
         registry
             .create(
-                config(60_000),
+                config(3_600_000),
                 MatchChallengeRef {
                     challenge_id: "easy".into(),
                     version: 1,
@@ -987,6 +1010,75 @@ fn reading_a_scoreboard_keeps_it_alive() {
     );
 }
 
+#[test]
+fn an_expired_running_round_nobody_reads_is_evicted() {
+    // Only a read settles a round, so one that closed with nobody watching
+    // stayed Running, and Running rooms were never swept.
+    let clock = ManualClock::new(T0);
+    let (registry, _) = registry_with_players(&clock, &["alice"]);
+
+    let close = T0 + 60_000;
+    assert!(
+        registry
+            .evict_idle(close + 15 * 60_000, 15 * 60_000, 30 * 60_000)
+            .is_empty()
+    );
+    assert_eq!(
+        registry
+            .evict_idle(close + 15 * 60_000 + 1, 15 * 60_000, 30 * 60_000)
+            .len(),
+        1
+    );
+    assert!(registry.is_empty());
+}
+
+#[test]
+fn the_registry_refuses_new_rooms_past_its_cap() {
+    let clock = ManualClock::new(T0);
+    let registry = MatchRegistry::new(Arc::new(clock.clone()));
+    let open = || {
+        registry.create(
+            config(60_000),
+            MatchChallengeRef {
+                challenge_id: "easy".into(),
+                version: 1,
+            },
+        )
+    };
+
+    for _ in 0..hcr::rounds::MAX_ROOMS {
+        open().unwrap();
+    }
+    assert!(matches!(open(), Err(ServiceError::RateLimited)));
+}
+
+#[tokio::test]
+async fn create_match_rejects_out_of_range_config() {
+    // An unbounded duration overflowed the deadline under the rooms lock, and
+    // an unbounded player cap let one room's roster grow without limit.
+    let clock = ManualClock::new(T0);
+    let service = service_at(&clock, 600_000);
+
+    let cases = [
+        (config(u64::MAX), "durationMs"),
+        (
+            MatchConfig {
+                max_players: 100_000,
+                ..config(60_000)
+            },
+            "maxPlayers",
+        ),
+    ];
+    for (config, expected) in cases {
+        match service.create_match(config) {
+            Err(ServiceError::ProgramInvalid { field, .. }) => {
+                assert_eq!(field.as_deref(), Some(expected));
+            }
+            other => panic!("{expected}: {other:?}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Usage collection
 // ---------------------------------------------------------------------------
@@ -1016,6 +1108,7 @@ async fn a_closed_round_is_recorded_once_however_many_clients_read_it() {
             &state.match_id,
             "alice",
             submission("sub-1", "easy", 1, safe_program()),
+            true,
         )
         .await
         .unwrap();

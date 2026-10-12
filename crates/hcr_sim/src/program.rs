@@ -7,7 +7,9 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use hcr_contract::{JointConfig, MAX_RUNTIME_COMMANDS, Program, ProgramNode, RobotCommand};
+use hcr_contract::{
+    JointConfig, MAX_ID_BYTES, MAX_RUNTIME_COMMANDS, Program, ProgramNode, RobotCommand,
+};
 
 use crate::error::SimError;
 
@@ -19,7 +21,8 @@ use crate::error::SimError;
 ///
 /// # Errors
 /// Returns [`SimError::CommandLimitExceeded`] once the expansion passes `limit`,
-/// and [`SimError::EmptyProgram`] if nothing executable results.
+/// [`SimError::EmptyProgram`] if nothing executable results, and
+/// [`SimError::InvalidNode`] for a block or joint id over `MAX_ID_BYTES`.
 pub fn expand_program(program: &Program, limit: usize) -> Result<Vec<RobotCommand>, SimError> {
     let mut commands = Vec::new();
     append_nodes(&program.nodes, limit, &mut commands)?;
@@ -45,7 +48,13 @@ fn append_nodes(
         match node {
             ProgramNode::Repeat { count, body, .. } => {
                 for _ in 0..*count {
+                    let before = commands.len();
                     append_nodes(body, limit, commands)?;
+                    // Expansion is pure: a pass that adds nothing means every later pass adds nothing.
+                    // shortcut: zero-count/empty repeats are skipped, not refused (TS parity), so one pass still walks its subtree; refuse them once the TS expander does too (the frontend compiler already never emits them).
+                    if commands.len() == before {
+                        break;
+                    }
                 }
             }
             ProgramNode::SetJointAngle {
@@ -53,6 +62,8 @@ fn append_nodes(
                 angle_deg,
                 source_block_id,
             } => {
+                check_id(source_block_id)?;
+                check_id(joint_id)?;
                 commands.push(RobotCommand::SetJointAngle {
                     joint_id: joint_id.clone(),
                     angle_deg: *angle_deg,
@@ -71,6 +82,7 @@ fn append_nodes(
                 duration_ms,
                 source_block_id,
             } => {
+                check_id(source_block_id)?;
                 commands.push(RobotCommand::Wait {
                     duration_ms: *duration_ms,
                     source_block_id: source_block_id.clone(),
@@ -83,6 +95,17 @@ fn append_nodes(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Refused before the id is copied into every expanded command; never echoed back.
+pub(crate) fn check_id(id: &str) -> Result<(), SimError> {
+    if id.len() > MAX_ID_BYTES {
+        return Err(SimError::InvalidNode {
+            source_block_id: None,
+            reason: "Block and joint ids must be at most 64 bytes.",
+        });
     }
     Ok(())
 }

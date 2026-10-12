@@ -13,7 +13,8 @@ use crate::binding::Router;
 use crate::hotaru_binding::{ROUTES, make_handler};
 
 /// Runtime configuration, read from the environment.
-#[derive(Debug, Clone)]
+// No Debug: it would print signing_key.
+#[derive(Clone)]
 pub struct ServerConfig {
     /// `address:port` to listen on.
     pub binding: String,
@@ -206,6 +207,7 @@ pub fn serve(router: Arc<Router>, config: &ServerConfig) {
     let mut safety = HttpSafety::default();
     safety.set_max_body_size(Some(MAX_REQUEST_BODY_BYTES));
 
+    // shortcut: hotaru's 30 s connection limit counts from accept, so a reused connection (a pooling proxy, or a browser on the port directly) can be cut mid-request; run dispatch in tokio::spawn if either is ever needed.
     let app = <Server>::new()
         .binding(config.binding.as_str())
         .single_protocol(ProtocolBuilder::new(HTTP::server(safety)))

@@ -118,11 +118,12 @@ def adaptive():
         if status != 200:
             print(f"  next → {item['error']['code']} (terminator fired)")
             break
-        submit(f"cat-{index}", item["challengeId"], item["challengeVersion"], STARTER)
+        submit(f"cat-{session}-{index}", item["challengeId"], item["challengeVersion"],
+               STARTER, sessionId=session)
         _, outcome = call("POST", f"/sessions/{session}/responses", {
             "sessionId": session,
             "itemRef": item["itemRef"],
-            "submissionId": f"cat-{index}",
+            "submissionId": f"cat-{session}-{index}",
         })
         print(f"  item {item['challengeId']:<28} raw={outcome['rawScore']:.3f} "
               f"correct={str(outcome['correct']):<5} θ={outcome['theta']:+.3f} "

@@ -146,7 +146,7 @@ pub fn replay(
     }
 
     let metrics = ProgramMetrics {
-        source_block_count: program.source_block_count,
+        source_block_count: program.scored_block_count(),
         executed_command_count,
         estimated_duration_ms,
     };

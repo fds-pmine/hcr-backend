@@ -189,11 +189,39 @@ async fn a_malformed_body_is_422_not_500() {
             body: b"{ not json".to_vec(),
             player_id: None,
             display_name: None,
+            research_consent: false,
         })
         .await;
 
     assert_eq!(reply.status, 422);
     assert!(reply.text().contains("PROGRAM_INVALID"));
+}
+
+#[tokio::test]
+async fn a_program_nested_past_the_depth_limit_is_422() {
+    // F38: serde_json's depth limit, not the worker's stack, stops deep nesting.
+    let mut node = safe_program().nodes.remove(0);
+    for _ in 0..100 {
+        node = ProgramNode::Repeat {
+            count: 1,
+            body: vec![node],
+            source_block_id: "r".into(),
+        };
+    }
+    let program = Program {
+        nodes: vec![node],
+        source_block_count: 101,
+    };
+
+    let reply = router()
+        .dispatch(HttpCall::post(
+            "/api/v1/submissions",
+            submission("sub-deep", "easy", 1, program),
+        ))
+        .await;
+
+    assert_eq!(reply.status, 422);
+    assert!(reply.text().contains("recursion limit"), "{}", reply.text());
 }
 
 #[tokio::test]
@@ -276,11 +304,41 @@ async fn cutter_grid_plan_route_rejects_oversize_input_before_decoding() {
             body: vec![b' '; CUTTER_GRID_PLAN_REQUEST_MAX_BYTES + 1],
             player_id: None,
             display_name: None,
+            research_consent: false,
         })
         .await;
 
     assert_eq!(reply.status, 422);
     assert!(reply.text().contains("PROGRAM_INVALID"));
+}
+
+#[tokio::test]
+async fn only_submission_routes_accept_bodies_over_64_kib() {
+    let router = router();
+
+    // Valid JSON, so without the cap this would decode and reach the room
+    // lookup (404); the cap refuses it first.
+    let crews = serde_json::json!({ "crews": { "u-1": "x".repeat(64 * 1024) } });
+    let reply = router
+        .dispatch(HttpCall::post("/api/v1/matches/NOPE22/crews", crews))
+        .await;
+    assert_eq!(reply.status, 422, "{}", reply.text());
+    assert!(reply.text().contains("PROGRAM_INVALID"));
+
+    let mut body =
+        serde_json::to_vec(&submission("sub-big", "easy", 1, safe_program())).expect("encode");
+    body.resize(body.len() + 64 * 1024, b' ');
+    let reply = router
+        .dispatch(HttpCall {
+            method: Method::Post,
+            path: "/api/v1/submissions".into(),
+            body,
+            player_id: None,
+            display_name: None,
+            research_consent: false,
+        })
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.text());
 }
 
 // ---------------------------------------------------------------------------
@@ -310,12 +368,15 @@ async fn a_session_can_be_driven_entirely_over_http() {
     router
         .dispatch(HttpCall::post(
             "/api/v1/submissions",
-            submission(
-                "sub-1",
-                &item.challenge_id,
-                item.challenge_version,
-                safe_program(),
-            ),
+            SubmissionCreate {
+                session_id: Some(session_id.clone()),
+                ..submission(
+                    "sub-1",
+                    &item.challenge_id,
+                    item.challenge_version,
+                    safe_program(),
+                )
+            },
         ))
         .await;
 
@@ -505,6 +566,63 @@ async fn joining_without_an_authenticated_player_is_refused() {
 
     assert_eq!(reply.status, 500);
     assert!(reply.text().contains("authenticated player"));
+}
+
+#[tokio::test]
+async fn a_player_header_must_be_a_short_token_and_names_are_cleaned() {
+    let router = router();
+    let created = router
+        .dispatch(HttpCall::post("/api/v1/matches", MatchConfig::default()))
+        .await;
+    let match_id = created.json::<MatchState>().expect("state").match_id;
+    let join = format!("/api/v1/matches/{match_id}/join");
+
+    for player in ["a\nb".to_string(), "x".repeat(65), String::new()] {
+        let reply = router
+            .dispatch(HttpCall::post(join.as_str(), ()).as_player(player.as_str()))
+            .await;
+        assert_eq!(reply.status, 422, "{player:?}: {}", reply.text());
+    }
+
+    // The check sits at the top of the router, so it also covers the
+    // unauthenticated route that appends to the usage log.
+    let lesson = LessonEventCreate {
+        lesson_id: "cutter-grid-fixed-axes".to_string(),
+        section: 1,
+        activity: None,
+        outcome: LessonOutcome::Opened,
+        tests: None,
+        mode: None,
+    };
+    let reply = router
+        .dispatch(HttpCall::post("/api/v1/usage/lessons", lesson).as_player("x".repeat(65)))
+        .await;
+    assert_eq!(reply.status, 422, "{}", reply.text());
+
+    let noisy = format!("\u{1b}Al\nice{}", "x".repeat(100));
+    let joined = router
+        .dispatch(HttpCall::post(join.as_str(), ()).as_player_named("u-1", noisy))
+        .await;
+    assert_eq!(joined.status, 200, "{}", joined.text());
+    let blank = router
+        .dispatch(HttpCall::post(join.as_str(), ()).as_player_named("u-2", "   "))
+        .await;
+    assert_eq!(blank.status, 200, "{}", blank.text());
+
+    let state: MatchState = blank.json().expect("state");
+    let label = |id: &str| {
+        state
+            .players
+            .iter()
+            .find(|p| p.player_id == id)
+            .map(|p| p.display_name.clone())
+            .expect("joined")
+    };
+    let cleaned = label("u-1");
+    assert!(cleaned.starts_with("Alice"), "{cleaned:?}");
+    assert!(cleaned.chars().count() <= 32);
+    assert!(!cleaned.chars().any(char::is_control));
+    assert_eq!(label("u-2"), "u-2");
 }
 
 #[tokio::test]

@@ -29,12 +29,20 @@ pub struct HandshakeRequest {
     pub protocols: Vec<String>,
 }
 
+/// Largest header block [`parse_request`] accepts.
+const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
+
 /// Parse an HTTP upgrade request.
 ///
 /// Returns `Ok(None)` if the header block is incomplete — the caller should read
-/// more bytes. The returned `usize` is the length of the consumed request.
+/// more bytes — and an error once 16 KiB have arrived without its end. The
+/// returned `usize` is the length of the consumed request.
 pub fn parse_request(buf: &[u8]) -> WsResult<Option<(HandshakeRequest, usize)>> {
-    let Some(end) = find_header_end(buf) else {
+    // Scanning only the first 16 KiB also bounds the rescan on every call.
+    let Some(end) = find_header_end(&buf[..buf.len().min(MAX_HANDSHAKE_BYTES)]) else {
+        if buf.len() >= MAX_HANDSHAKE_BYTES {
+            return Err(WsError::BadHandshake("header block exceeds 16 KiB"));
+        }
         return Ok(None);
     };
 

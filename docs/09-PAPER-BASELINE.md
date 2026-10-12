@@ -219,7 +219,7 @@ connected to each other.
 | --- | --- | --- |
 | Topic tree, QoS/retain policy, device payloads, e-stop-on-its-own-topic rule | **Specified** | `01-CONTRACT.md` §5, §6.5 |
 | Adapter design, handshake path, size bounds, 600–900 LOC estimate | **Specified** | `04-SERVICE.md` §3 |
-| RFC 6455 framing for the MQTT binding — handshake, masking, fragmentation, ping/close, size limits | **Implemented, 33 tests** | `crates/hcr_ws/` |
+| RFC 6455 framing for the MQTT binding — handshake, masking, fragmentation, ping/close, size limits | **Implemented, 35 tests** | `crates/hcr_ws/` |
 | MQTT 3.1.1 broker and client | **Available**, separate crate | `hotaru_mqtt` on `opub/theme-0.8.6-support`, 114 tests green. Connect-time auth exists (`Authenticator`, deny-all default). Missing: **retained-message store** (delivery hard-codes `retain: false`, `broker.rs:516`), **per-topic ACL**, **tenant concept** |
 | `ConnStream` / `HotaruRead` / `HotaruWrite` adapter binding the two | **Absent here, but smaller than specified** | No `ConnStream` reference under `crates/`. Upstream `hotaru_mqtt` is already generic over it (`MqttChannel<W: ConnStream>`), so the job is one impl over `hcr_ws` framing, not the 600–900 LOC of `04-SERVICE.md` §3 |
 | Broker instantiation and protocol registration | **Absent** | `crates/hcr/src/deploy.rs:209-212` registers `single_protocol(HTTP::server(...))` only |

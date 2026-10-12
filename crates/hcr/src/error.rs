@@ -68,7 +68,7 @@ pub enum ServiceError {
     },
     /// The bank could not supply an item.
     BankExhausted,
-    /// Replay capacity is saturated.
+    /// The server is at capacity (replay workers, live rooms or sessions).
     RateLimited,
     /// Replay exceeded its tick budget.
     ReplayTimeout,
@@ -184,7 +184,7 @@ impl std::fmt::Display for ServiceError {
                 write!(f, "The question bank has no suitable item available.")
             }
             ServiceError::RateLimited => {
-                write!(f, "Replay capacity is saturated; retry shortly.")
+                write!(f, "The server is at capacity; retry shortly.")
             }
             ServiceError::ReplayTimeout => write!(f, "Replay exceeded its budget."),
             ServiceError::Internal(reason) => write!(f, "Internal service error: {reason}"),
@@ -224,6 +224,13 @@ impl From<SimError> for ServiceError {
                     field: None,
                 }
             }
+            SimError::InvalidNode {
+                source_block_id,
+                reason,
+            } => ServiceError::ProgramInvalid {
+                message: reason.to_string(),
+                field: source_block_id,
+            },
             SimError::InvalidScoring(reason) => ServiceError::WeightsInvalid(reason),
             SimError::CutterPlanRejected {
                 rejection,

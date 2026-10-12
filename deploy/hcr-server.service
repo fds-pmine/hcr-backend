@@ -1,12 +1,12 @@
 # systemd unit for hcr-server.
 #
 #   sudo install -m0644 deploy/hcr-server.service /etc/systemd/system/
-#   sudo install -m0640 -o root -g hcr deploy/hcr-server.env /etc/hcr-server.env
+#   create /etc/hcr-server.env as in docs/DEPLOY.md §2 Install — never inside the repository; it holds the signing key
 #   sudo systemctl daemon-reload && sudo systemctl enable --now hcr-server
 #
 # Create the user and state directory first:
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin hcr
-#   sudo install -d -o hcr -g hcr /var/lib/hcr
+#   sudo install -d -m0750 -o hcr -g hcr /var/lib/hcr
 
 [Unit]
 Description=HCR Simulator API
@@ -60,6 +60,21 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+
+# Files the service creates (the usage log) are 0640, never world-readable.
+UMask=0027
+# Room for connections well past the default 1024, where accept() would spin on EMFILE.
+LimitNOFILE=65536
+# Unreachable except from this host, even if HCR_BIND is set to a public address.
+IPAddressDeny=any
+# The reverse proxy connects over loopback.
+IPAddressAllow=localhost
+# TCP for the API and a Unix socket for the journal; no other socket family.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Other processes are hidden in /proc.
+ProtectProc=invisible
+# /proc shows process directories only, not kernel tunables or system-wide stats.
+ProcSubset=pid
 
 # The one writable path: the usage log.
 ReadWritePaths=/var/lib/hcr

@@ -7,16 +7,33 @@
 # certificate itself, and a expired certificate is the most common way a small
 # deployment goes dark.
 
+# Behind Cloudflare, take the visitor's address from CF-Connecting-IP, but only
+# when the peer is a Cloudflare edge; that address is `{client_ip}` below.
+# Needs `caddy add-package github.com/WeidiDeng/caddy-cloudflare-ip`; without it
+# use `trusted_proxies static <cloudflare.com/ips>`.
+{
+	servers {
+		trusted_proxies cloudflare
+		client_ip_headers CF-Connecting-IP
+	}
+}
+
 api.hcr.rs {
 	# The API is plain HTTP on loopback; this is the only thing that should
-	# reach it.
-	reverse_proxy 127.0.0.1:18623
+	# reach it. One connection per request: hotaru's 30 s limit counts from
+	# accept, so a pooled connection could be cut in the middle of a request.
+	reverse_proxy 127.0.0.1:18623 {
+		transport http {
+			keepalive off
+		}
+	}
 
 	# Rate limiting belongs here, not in the service.
 	#
 	# hcr-server cannot do it usefully: the only caller identity it has is a
 	# header the client chooses, so a per-player limit is bypassed by picking
-	# a new id. Caddy sees the real address. `ReplayPool` still bounds
+	# a new id. Caddy sees the real address (`{client_ip}`, not the Cloudflare
+	# edge in `{remote_host}`). `ReplayPool` still bounds
 	# concurrent replays and returns 429 when saturated — that protects the
 	# CPU; this protects it from being *reached* that hard in the first place.
 	#
@@ -26,7 +43,7 @@ api.hcr.rs {
 	# rather not build a custom Caddy, and rely on Cloudflare's rate limiting.
 	rate_limit {
 		zone api {
-			key {remote_host}
+			key {client_ip}
 			events 120
 			window 1m
 		}

@@ -214,7 +214,7 @@ export interface ClientPreview {
 }
 
 export interface SubmissionCreate {
-  /** Client-generated ULID. Idempotency key — resubmitting returns the first result. */
+  /** Client-generated ULID. Idempotency key — the same submitter (player, sessionId) resubmitting for the same challenge gets the first result; any other reuse is PROGRAM_INVALID. */
   submissionId: string;
   challengeId: string;
   challengeVersion: number;
@@ -241,6 +241,7 @@ export interface SubmissionCreate {
    * without one the submission fails closed on `planner-not-ready`. See `08-CUTTER-GRID.md` §0.
    */
   cutterGridV4?: CutterGridProgramV4;
+  /** Required for the submission to be answered via the session's `responses`. */
   sessionId?: string;
   itemRef?: string;
   /** Set when submitting into a competitive round; acceptance is by server receive time. */
@@ -724,8 +725,10 @@ export type MatchPhase = 'lobby' | 'countdown' | 'running' | 'grading' | 'result
 export type RankBy = 'completion' | 'final';
 
 export interface MatchConfig {
+  /** 1..=7 200 000 (2 h); else 422 PROGRAM_INVALID with field 'durationMs'. */
   durationMs: number;
   rankBy: RankBy;
+  /** 1..=64; else 422 PROGRAM_INVALID with field 'maxPlayers'. */
   maxPlayers: number;
   /** Omit to have the server pick/generate; all players always receive the identical item. */
   challengeRef?: { challengeId: string; version: number };

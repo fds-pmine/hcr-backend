@@ -62,7 +62,8 @@ const DIFFICULTY_RANGE: (f64, f64) = (-1.5, 1.5);
 /// nothing in the pool fits, which is what stops endless practice ending after
 /// a dozen items. Measurement sessions never see it: a synthesised item is
 /// `Provisional`, and resting an ability estimate on an uncalibrated item is
-/// exactly what the calibration rule forbids.
+/// exactly what the calibration rule forbids. hcr-server does not attach it
+/// (see the shortcut in `bin/hcr-server.rs`).
 pub fn challenge_generator() -> Arc<dyn ChallengeGenerator> {
     let vectors: serde_json::Value =
         serde_json::from_str(VECTORS).expect("conformance fixture parses");

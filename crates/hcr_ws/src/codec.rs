@@ -35,6 +35,9 @@ pub const DEFAULT_MAX_BUFFER: usize = DEFAULT_MAX_FRAME_PAYLOAD + 16 * 1024;
 #[derive(Debug)]
 pub struct Decoder {
     buf: Vec<u8>,
+    /// Bytes of `buf` already decoded; dropped on the next `feed`, so each
+    /// frame does not memmove the rest of the buffer.
+    read: usize,
     max_frame_payload: usize,
     max_buffer: usize,
     /// A fragmented data message is in progress.
@@ -53,6 +56,7 @@ impl Decoder {
     pub fn new(max_frame_payload: usize, max_buffer: usize) -> Self {
         Self {
             buf: Vec::new(),
+            read: 0,
             max_frame_payload,
             max_buffer,
             in_message: false,
@@ -71,6 +75,12 @@ impl Decoder {
     /// [`WsError::BufferOverflow`] if the peer sends more than `max_buffer`
     /// bytes without producing a parseable frame.
     pub fn feed(&mut self, bytes: &[u8]) -> WsResult<()> {
+        // RFC 6455 §5.5.1: bytes after the peer's Close are discarded, not buffered.
+        if self.closed {
+            return Ok(());
+        }
+        self.buf.drain(..self.read);
+        self.read = 0;
         if self.buf.len() + bytes.len() > self.max_buffer {
             return Err(WsError::BufferOverflow {
                 limit: self.max_buffer,
@@ -82,16 +92,22 @@ impl Decoder {
 
     /// Pull the next complete frame, if one has arrived.
     ///
-    /// Returns `Ok(None)` when more bytes are needed.
+    /// Returns `Ok(None)` when more bytes are needed, and always once a close
+    /// frame has been decoded.
     pub fn poll(&mut self) -> WsResult<Option<Event>> {
-        let Some((header, header_len)) = FrameHeader::parse(&self.buf, self.max_frame_payload)?
-        else {
+        // RFC 6455 §5.5.1: nothing the peer sends after its Close is a frame.
+        if self.closed {
+            return Ok(None);
+        }
+
+        let buf = &self.buf[self.read..];
+        let Some((header, header_len)) = FrameHeader::parse(buf, self.max_frame_payload)? else {
             return Ok(None);
         };
 
         let payload_len = header.payload_len as usize;
         let total = header_len + payload_len;
-        if self.buf.len() < total {
+        if buf.len() < total {
             return Ok(None);
         }
 
@@ -100,9 +116,9 @@ impl Decoder {
             return Err(WsError::UnmaskedClientFrame);
         };
 
-        let mut payload = self.buf[header_len..total].to_vec();
+        let mut payload = buf[header_len..total].to_vec();
         apply_mask(&mut payload, mask, 0);
-        self.buf.drain(..total);
+        self.read += total;
 
         // Control frames may be interleaved inside a fragmented data message, so
         // they must not disturb the fragmentation state.

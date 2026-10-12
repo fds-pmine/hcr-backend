@@ -263,8 +263,24 @@ pub struct CutterGridProgram {
     pub planner_version: String,
     /// Top-level nodes.
     pub nodes: Vec<CutterGridNode>,
-    /// Enabled, non-shadow blocks in the source workspace.
+    /// Enabled, non-shadow blocks in the source workspace, as the client
+    /// declares it. Scoring uses [`CutterGridProgram::scored_block_count`].
     pub source_block_count: u32,
+}
+
+impl CutterGridProgram {
+    /// Blocks the score charges for: the declared count, never fewer than the IR nodes.
+    pub fn scored_block_count(&self) -> u32 {
+        fn count(nodes: &[CutterGridNode]) -> u32 {
+            nodes.iter().fold(0u32, |n, node| {
+                n.saturating_add(match node {
+                    CutterGridNode::Repeat { body, .. } => 1u32.saturating_add(count(body)),
+                    _ => 1,
+                })
+            })
+        }
+        self.source_block_count.max(count(&self.nodes))
+    }
 }
 
 /// One sample of the frozen trajectory.
@@ -774,7 +790,8 @@ pub enum CutterGridPlanningErrorCodeV4 {
     EndpointIkNotConverged,
     /// The deterministic IK candidate budget was exhausted.
     EndpointIkSearchExhausted,
-    /// Endpoint candidates exist but no safe compact PTP edge connects them.
+    /// Endpoint candidates exist but no safe compact PTP edge connects them,
+    /// or the server's deterministic search budget ran out first.
     EndpointPtpDisconnected,
     /// A route would need more than two primitives for one visible Move.
     MotionPrimitiveBudgetExhausted,

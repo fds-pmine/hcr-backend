@@ -71,3 +71,10 @@ pub const SIM_TICK_MS: f64 = 5.0;
 /// Mirrors `MAX_RUNTIME_COMMANDS` in `src/features/blockly/programCompiler.ts:12`.
 /// The server enforces this itself rather than trusting the client's expansion.
 pub const MAX_RUNTIME_COMMANDS: usize = 500;
+
+/// Cutter Grid `Repeat.count` is 1..=MAX_REPEAT_COUNT.
+pub const MAX_REPEAT_COUNT: u32 = 20;
+/// Cutter Grid `Move.distance` is 1..=MAX_MOVE_DISTANCE cells.
+pub const MAX_MOVE_DISTANCE: u32 = 12;
+/// Longest id accepted from a client. Expansion copies each block id into every command.
+pub const MAX_ID_BYTES: usize = 64;

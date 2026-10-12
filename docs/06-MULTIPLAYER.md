@@ -49,7 +49,7 @@ stateDiagram-v2
 | Control | Rule | Attack it stops |
 | --- | --- | --- |
 | Server-clock deadline | A submission counts iff **server receive time** ≤ `closesAt`. Client `ts` is ignored entirely | Clock tampering; "my machine said I was in time" |
-| Hidden scores during the round | No player sees anyone's score — including their own authoritative score — until `results` | Submit → read rank → refine against a known bar |
+| Hidden scores during the round | No player sees anyone else's score or the standings until `results`. A player's own score is readable through `GET /submissions/{id}`, as solo scoring and the browser preview already show it; not looking is a classroom honour rule, not enforced | Submit → read rank → refine against a known bar |
 | Resubmission allowed, best counts | Unlimited submissions until close; the server keeps the best by `rankBy` | Punishing a player for a lag spike or a bad first attempt |
 | IR-only submission | Program IR is submitted; the server replays it ([`02`](02-DETERMINISM.md) §3) | Editing the score in devtools |
 | Identical seeded challenge | Same item and seed for all participants, revealed at T0 | Early or easier item for some players |

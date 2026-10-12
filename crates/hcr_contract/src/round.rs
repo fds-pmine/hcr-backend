@@ -78,12 +78,12 @@ pub enum CrewScoring {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchConfig {
-    /// Wall-clock length of the round.
+    /// Wall-clock length of the round, 1..=7 200 000 ms (2 h).
     pub duration_ms: u64,
     /// Ranking metric.
     #[serde(default)]
     pub rank_by: RankBy,
-    /// Cap on participants.
+    /// Cap on participants, 1..=64.
     pub max_players: usize,
     /// Minimum gap between one player's submissions.
     ///
@@ -183,7 +183,7 @@ pub struct MatchPlayer {
     /// Absent means undealt. Clients draw crews from the roster themselves when
     /// nobody has set any, which needs no server at all; this field exists for
     /// the case the draw cannot serve — an instructor deliberately putting a
-    /// newcomer beside a particular person.
+    /// newcomer beside a particular person. 1 to 64 of `[A-Za-z0-9_-]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crew: Option<String>,
 }

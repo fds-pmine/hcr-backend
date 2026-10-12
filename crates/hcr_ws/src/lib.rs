@@ -57,6 +57,13 @@
 //! assert!(session.has_outbound());
 //! ```
 
+// shortcut: Decoder and the handshake are bounded, but nothing links this crate
+// yet. The Stage 2 ConnStream adapter must still add: caps on WsSession's
+// inbound/outbound buffers, pong coalescing (latest ping wins) and no pongs
+// after our own Close, error latching, feeding `on_bytes` input in chunks (one
+// read past the 16 KiB `feed` headroom overflows even when it holds whole
+// frames), close-code and duplicate-header validation, and Origin/Host checks
+// in the handshake. Upgrade when the adapter lands.
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 

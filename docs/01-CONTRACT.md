@@ -101,6 +101,13 @@ reports about a lesson and answers "is the course being used", never "did this l
 filter on `kind` — a claimed outcome is not a response, and pooling the two would fit item
 difficulty against a mixture of measured and asserted results.
 
+Research consent is enforced where the log is written. A `submission` or `lesson` usage row is written
+only when the request carries `X-HCR-Research-Program-And-Scores: granted`; any other value, or none, is a
+decline, and the route answers exactly as it would otherwise (a declined lesson event returns
+`recorded: false`). The browser sends the header on solo and round submissions and on lesson events, not
+on `/sessions/{id}/responses`, so a `sessionResponse` row follows the consent stored with the submission
+it names. `matchResults` names no player and is always written.
+
 Round endpoints carry two more headers:
 
 | Header | Meaning |
@@ -240,7 +247,7 @@ that ignores it still gets a valid v1 challenge.
 issuedAt)`. It exists because arona identifies items by `Vec` index and `Question` carries no ID
 (`arona/src/core/question.rs:159-165`); the token carries that index across the wire without exposing or
 trusting it. The server rejects a `session.respond` whose `itemRef` was not the one it last issued for that
-session.
+session. The submission it names must have been created with that `sessionId`, or it is `ITEM_REF_INVALID`.
 
 Session state machine:
 
@@ -338,7 +345,10 @@ already succeeded, but the deterministic server planner could not produce a cert
 `details.plannerCode` and `details.stage` are stable V4 categories; when known, `details.actionIndex`,
 `details.expandedActionIndex`, `details.targetCoord`, and `field` identify the visible Blockly action. A
 missing server Profile is specifically `planner-not-ready`, not a reason to fall back to scoring or V2
-submission semantics.
+submission semantics. The server's global endpoint search also stops after a fixed, deterministic budget
+of 400 000 evaluated geometry samples per plan; a program that exhausts it fails with `plannerCode`
+`endpoint-ptp-disconnected` at the layer the search stopped on, so the same program gets the same answer
+on every server, whatever the load.
 
 `MATCH_NOT_READY` covers the two refusals that are the *design* of a round rather than a fault: the
 challenge during the lobby, and results while the round is still running. Both mean "try again later, not
@@ -350,8 +360,9 @@ differently", which is why they are not `ITEM_REF_INVALID` (nothing was forged) 
 - **QoS 1 is at-least-once**, so every mutating message MUST be idempotent by `id`. The backend keeps a
   dedupe window (recommended 24 h for submissions, 60 s for device commands) keyed on `id`, returning the
   original result on replay rather than re-executing.
-- `submissionId` is client-generated (ULID) and is the idempotency key for scoring. Re-submitting returns
-  the first result; it never re-scores.
+- `submissionId` is client-generated (ULID) and is the idempotency key for scoring. Re-submitting by the
+  same submitter (player, sessionId) for the same challenge returns the first result; it never re-scores.
+  Any other reuse of the id is `PROGRAM_INVALID`.
 - Ordering is per-topic FIFO only. Never rely on cross-topic ordering — telemetry (QoS 0) and events (QoS 1)
   travel independently and will interleave.
 - The broker preserves publisher ordering per connection (`hotaru_mqtt`'s per-endpoint FIFO dispatcher,
@@ -383,8 +394,14 @@ Three rules the ACL must enforce, each corresponding to a real attack:
 | Max runtime commands per program | 500 | `programCompiler.ts:12` (v1 invariant) |
 | Max MQTT packet | 1 MiB (server default); 8 KiB on MCUs | `MqttSafety::max_packet_size` |
 | Max challenge payload | 2 MiB uncompressed | new |
-| Max request body | 8 MiB | sized for a Cutter Grid trajectory at the command cap (~2.5 MB); `deploy.rs` and both proxy configs must agree |
+| Max request body | 8 MiB on POST /submissions and /matches/{id}/submissions; 2 KiB on /usage/lessons; 64 KiB elsewhere | 8 MiB is sized for a Cutter Grid trajectory at the command cap (~2.5 MB), and `deploy.rs` and both proxy configs must agree; 64 KiB fits a `/score` body of roughly 1000 voxels (the shipped hairstyle is ~16 KB) |
+| Client-chosen ids (submissionId, sessionId, matchId, X-HCR-Player) | 1–64 bytes of [A-Za-z0-9_-]; else 422 PROGRAM_INVALID | each becomes a map key, a usage-log field or a roster entry |
+| X-HCR-Player-Name | trimmed, control chars removed, cut to 32 chars; blank falls back to the player id | cosmetic roster label |
+| Round `durationMs` / `maxPlayers` | 1..=7 200 000 ms / 1..=64; else 422 PROGRAM_INVALID with that field | `MatchRegistry::create`; 4 096 live rooms and 10 000 live sessions, beyond which a create gets 429 RATE_LIMITED |
 | Max waypoints per Cutter Grid plan | 120 000 | verification cost guard |
+| V4 planner search budget | 400 000 geometry samples per plan (deterministic; about 5 s of one desktop core, 10x what the reference program spends); a spent budget answers `endpoint-ptp-disconnected` | `CUTTER_GRID_V4_SEARCH_SAMPLE_BUDGET` in `hcr_sim/src/cutter_grid_v4.rs`; IK, adaptive certificates and the finalize sweep are bounded per command but not counted |
+| Cutter Grid Repeat count / Move distance | 1..=20 / 1..=12 | refused by the V2 and V4 expanders |
+| Max sourceBlockId / jointId | 64 bytes | each id is copied into every expanded command |
 | Replay wall-clock budget | 5 s per submission | new |
 | Telemetry rate | ≤50 Hz, server may downsample before mirroring | new |
 | RPC timeout | 10 s control / 60 s submission | new |

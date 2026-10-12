@@ -388,6 +388,45 @@ fn expansion_accepts_exactly_the_limit_and_rejects_one_more() {
     ));
 }
 
+/// The id bound is server-only, not a TS-parity assertion; the repeat cases keep
+/// TS semantics and only stop passes that add nothing.
+#[test]
+fn expansion_ends_on_empty_repeats_and_refuses_long_ids() {
+    let repeat = |count, body| ProgramNode::Repeat {
+        count,
+        body,
+        source_block_id: "r".into(),
+    };
+    let expand = |nodes| expand_program_default(&program(nodes, 1));
+
+    // F1: u32::MAX x u32::MAX passes over nothing must end at once.
+    assert_eq!(
+        expand(vec![repeat(u32::MAX, vec![repeat(u32::MAX, vec![])])]),
+        Err(SimError::EmptyProgram)
+    );
+    assert_eq!(
+        expand(vec![repeat(u32::MAX, vec![repeat(0, vec![wait(1.0, "w")])])]),
+        Err(SimError::EmptyProgram)
+    );
+    assert_eq!(
+        expand(vec![repeat(20, vec![repeat(0, vec![wait(1.0, "w")]), wait(1.0, "w")])])
+            .unwrap()
+            .len(),
+        20
+    );
+
+    // F3: an oversized id is refused before it is copied, and never echoed.
+    let long = "x".repeat(MAX_ID_BYTES + 1);
+    let refused = Err(SimError::InvalidNode {
+        source_block_id: None,
+        reason: "Block and joint ids must be at most 64 bytes.",
+    });
+    assert_eq!(expand(vec![wait(1e12, &long)]), refused);
+    assert_eq!(expand(vec![set_angle(&long, 0.0, "a")]), refused);
+    let longest = "x".repeat(MAX_ID_BYTES);
+    assert_eq!(expand(vec![set_angle(&longest, 0.0, &longest)]).unwrap().len(), 1);
+}
+
 #[test]
 fn empty_program_is_rejected() {
     assert!(matches!(

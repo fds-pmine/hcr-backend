@@ -1,3 +1,6 @@
 target/
 .DS_Store
-*.lock
+*.env
+.env*
+!*.env.example
+docs/*

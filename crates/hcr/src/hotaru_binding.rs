@@ -93,6 +93,10 @@ pub const PLAYER_HEADER: &str = "x-hcr-player";
 /// [`crate::binding::HttpCall::display_name`].
 pub const PLAYER_NAME_HEADER: &str = "x-hcr-player-name";
 
+/// Header carrying the participant's research consent; only `granted` writes a
+/// usage row. See [`crate::binding::HttpCall::research_consent`].
+pub const RESEARCH_CONSENT_HEADER: &str = "x-hcr-research-program-and-scores";
+
 /// Request headers used by the browser clients.
 ///
 /// Keep this list in sync with `researchHeaders()` in the frontend. A custom
@@ -158,6 +162,7 @@ where
     let path = ctx.path();
     let player_id = ctx.header_str(PLAYER_HEADER).map(str::to_owned);
     let display_name = ctx.header_str(PLAYER_NAME_HEADER).map(str::to_owned);
+    let research_consent = ctx.header_str(RESEARCH_CONSENT_HEADER) == Some("granted");
     let body = take_body(ctx);
 
     let reply = router
@@ -167,6 +172,7 @@ where
             body,
             player_id,
             display_name,
+            research_consent,
         })
         .await;
 
@@ -203,15 +209,17 @@ fn matching_origin<'a>(
 }
 
 fn with_cors(response: HttpResponse, allow_origin: Option<&str>) -> HttpResponse {
+    // CORS headers depend on Origin, so a shared cache must key on it even for
+    // a response that carries none.
+    let response = response.add_header("Vary", "Origin");
     match allow_origin {
         None => response,
         Some(origin) => response
             .add_header("Access-Control-Allow-Origin", origin)
             .add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             .add_header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
-            // The response now varies by request origin, so a shared cache must
-            // not serve one front end's response to the other.
-            .add_header("Vary", "Origin"),
+            // A polling class would otherwise preflight every GET.
+            .add_header("Access-Control-Max-Age", "600"),
     }
 }
 

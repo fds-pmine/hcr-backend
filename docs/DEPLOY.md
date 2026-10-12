@@ -78,7 +78,7 @@ everything else is a few maps. Two shared cores and 512 MB is ample.
 ### Build
 
 ```sh
-cargo build --release -p hcr --features hotaru --bin hcr-server
+cargo build --locked --release -p hcr --features hotaru --bin hcr-server
 sudo install -m0755 target/release/hcr-server /usr/local/bin/
 ```
 
@@ -86,14 +86,15 @@ sudo install -m0755 target/release/hcr-server /usr/local/bin/
 
 ```sh
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin hcr
-sudo install -d -o hcr -g hcr /var/lib/hcr
+sudo install -d -m0750 -o hcr -g hcr /var/lib/hcr
 
 sudo install -m0644 deploy/hcr-server.service   /etc/systemd/system/
 sudo install -m0644 deploy/hcr-usage.logrotate  /etc/logrotate.d/hcr-usage
 
-sudo cp deploy/hcr-server.env.example /etc/hcr-server.env
-sudo chown root:hcr /etc/hcr-server.env && sudo chmod 0640 /etc/hcr-server.env
-sudo sed -i "s|replace-me-openssl-rand-hex-32|$(openssl rand -hex 32)|" /etc/hcr-server.env
+sudo install -m0640 -o root -g hcr deploy/hcr-server.env.example /etc/hcr-server.env
+sudo sed -i '/^HCR_SIGNING_KEY=/d' /etc/hcr-server.env
+# printf is a shell builtin, so the key is on no process's command line.
+printf 'HCR_SIGNING_KEY=%s\n' "$(openssl rand -hex 32)" | sudo tee -a /etc/hcr-server.env >/dev/null
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now hcr-server
@@ -106,7 +107,7 @@ Then put a reverse proxy in front — see §2.1 (nginx/aaPanel) or §2.2 (Caddy)
 ### Re-install
 
 ``````bash
-cargo build --release -p hcr --features hotaru --bin hcr-server
+cargo build --locked --release -p hcr --features hotaru --bin hcr-server
 sudo install -m0755 target/release/hcr-server /usr/local/bin/
 sudo systemctl restart hcr-server
 sudo cp /etc/hcr-server.env /etc/hcr-server.env.bak
@@ -133,19 +134,36 @@ panel issue and renew the certificate, then replace the generated `location /`
 with that file's contents.
 
 Two pieces live in the `http {}` context instead (App Store → Nginx → Settings →
-Configuration), because nginx will not accept them anywhere else:
+Configuration), because nginx will not accept them anywhere else. On a server
+set up earlier, replace the old `limit_req_zone $binary_remote_addr
+zone=hcrapi…` line rather than adding these beside it (nginx refuses a zone
+bound to two keys), and update `http {}` before installing the new site body,
+which needs `hcrpoll`; then run `sudo nginx -t`:
 
 ```nginx
-limit_req_zone $binary_remote_addr zone=hcrapi:10m rate=2r/s;
+# IPv4: the address. IPv6: the /64 (first 8 bytes).
+# shortcut: a routed /48 still gets 65k buckets; move to a Cloudflare rate-limiting rule if the access log shows it.
+map $binary_remote_addr $hcr_client { "~(?s)^(?<hcr_v6net>.{8}).{8}$" $hcr_v6net; default $binary_remote_addr; }
+map $request_method $hcr_read  { GET $hcr_client; OPTIONS $hcr_client; default ""; }
+map $request_method $hcr_write { GET ""; OPTIONS ""; default $hcr_client; }
+limit_req_zone $hcr_read  zone=hcrpoll:10m rate=30r/s;
+limit_req_zone $hcr_write zone=hcrapi:10m  rate=4r/s;
 include /www/server/nginx/conf/cloudflare-realip.conf;
 ```
 
 Generate that include once, and again whenever Cloudflare changes its ranges:
 
 ```sh
-sudo sh deploy/cloudflare-realip.sh > /www/server/nginx/conf/cloudflare-realip.conf
-sudo nginx -t && sudo nginx -s reload
+conf=/www/server/nginx/conf/cloudflare-realip.conf
+tmp=$(mktemp) && sh deploy/cloudflare-realip.sh > "$tmp" \
+  && { [ ! -e "$conf" ] || sudo cp -p "$conf" "$conf.bak"; } \
+  && sudo install -m0644 "$tmp" "$conf" && sudo nginx -t && sudo nginx -s reload
 ```
+
+If a fetch fails or a line is not a plain CIDR range, the script exits non-zero
+and the chain stops before the live file is touched. If `nginx -t` fails, put
+the previous file back with `sudo mv "$conf.bak" "$conf"` before anything
+reloads nginx.
 
 Three things to get right, in descending order of how easily they are missed:
 
@@ -174,20 +192,29 @@ nginx -V 2>&1 | tr ' ' '\n' | grep realip     # expect --with-http_realip_module
 nginx -t                                       # after every change, before reload
 ```
 
-If it is absent, drop both the `include` and the `limit_req` line and use
+If it is absent, drop both the `include` and the `limit_req` lines and use
 Cloudflare's own rate limiting — limiting on Cloudflare's addresses is worse than
 not limiting at all.
 
-> Not machine-validated: these files were reviewed against nginx's directive
-> contexts by hand, not run through `nginx -t` here. Run `nginx -t` before
-> reloading.
+> Checked on aaPanel's nginx 1.30.4 (PCRE 8.43) with `nginx -t` and a live run:
+> addresses in one IPv6 /64 share a bucket, and GET and POST use separate zones.
+> Another build can differ, so run `nginx -t` before reloading; if it rejects
+> the first `map`, drop it and use `$binary_remote_addr` in place of
+> `$hcr_client` in the other two.
 
 ### 2.2 Reverse proxy — Caddy
 
 `deploy/Caddyfile`, if you would rather not run a panel. Functionally the same;
-it obtains and renews the certificate itself, and its rate limiting needs a
-third-party module (`caddy add-package github.com/mholt/caddy-ratelimit`) where
-nginx has `limit_req` built in.
+it obtains and renews the certificate itself. It needs two third-party modules
+where nginx has the features built in: rate limiting, and Cloudflare's ranges for
+trusting `CF-Connecting-IP`. Adding a module replaces the binary, so restart:
+
+```sh
+sudo caddy add-package github.com/mholt/caddy-ratelimit
+sudo caddy add-package github.com/WeidiDeng/caddy-cloudflare-ip
+caddy validate --config deploy/Caddyfile
+sudo install -m0644 deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl restart caddy
+```
 
 ### Configuration
 
@@ -206,11 +233,32 @@ reference in flight.
 binds loopback, allows the Vite dev origin, and its key is a constant printed in
 its own source.
 
-### DNS
+### DNS and TLS
 
-Point `api.hcr.rs` at the VPS, proxied through Cloudflare (orange cloud).
-Then restrict the VPS firewall to Cloudflare's ranges, or the proxy — and the
-rate limiting in front of it — can be walked around by hitting the IP directly.
+Point `api.hcr.rs` at the VPS, proxied through Cloudflare (orange cloud), and set
+the zone's SSL/TLS mode to **Full (strict)**. "Flexible" sends the
+Cloudflare→origin hop in cleartext, and "Full" accepts any certificate there, so
+anyone on that path can read player ids and item references. The panel's (or
+Caddy's) own certificate satisfies strict mode.
+
+Restrict the VPS firewall to Cloudflare's ranges. A direct hit on the IP is
+still rate-limited, since the real-IP ranges mean it is keyed on the caller's own
+address, but it skips Cloudflare's WAF, DDoS protection and rate-limiting rules.
+
+The firewall admits every Cloudflare zone, not just yours: anyone can point
+their own zone at this IP. To admit only yours, use zone-level Authenticated
+Origin Pulls with a client certificate issued by your own CA. Cloudflare's
+shared AOP certificate proves only "some Cloudflare zone", so it does not help.
+Upload the certificate as the zone's AOP certificate and enable AOP in Cloudflare
+(their "Authenticated Origin Pulls" docs) **before** adding these lines to the
+site's `server {}` block, or every request is refused:
+
+```nginx
+ssl_client_certificate /www/server/nginx/conf/hcr-aop-ca.pem;
+ssl_verify_client on;
+```
+
+A request to the origin IP without that certificate then gets 400.
 
 ## 3. Usage collection
 
@@ -225,6 +273,9 @@ rate limiting in front of it — can be walked around by hitting the IP directly
 
 Four event kinds: `submission`, `sessionResponse`, `matchResults` and `lesson`.
 The full schema, and the reasoning, is in `crates/hcr/src/usage.rs`.
+
+Run the commands in this section from a root shell (`sudo -s`): the log, its
+archives and the backups are readable only by root and hcr.
 
 The first three are the server's own account of work it did. **`lesson` is not:**
 the lessons run and score entirely in the browser, so those rows carry what a
@@ -253,11 +304,12 @@ code — it seeds a log with rows an older build wrote, runs this build against 
 and checks the old bytes are still a byte-for-byte prefix.
 
 **Back up the directory, not the file.** Right after a rotation `usage.jsonl` is
-legitimately zero bytes and the day's rows are in `usage.jsonl.1`, so a backup of
-`usage.jsonl` alone captures nothing — and, worse, succeeds while doing it:
+legitimately absent or zero bytes and the day's rows are in `usage.jsonl.1`, so a
+backup of `usage.jsonl` alone captures nothing — and, worse, succeeds while doing
+it:
 
 ```sh
-sudo tar czf /var/backups/hcr-usage-$(date +%F-%H%M).tar.gz -C /var/lib/hcr .
+(umask 077 && tar czf /var/backups/hcr-usage-$(date +%F-%H%M).tar.gz -C /var/lib/hcr .)
 tar tzvf /var/backups/hcr-usage-*.tar.gz    # non-empty, or the backup is a shell
 ```
 
@@ -361,25 +413,32 @@ jq -r -s 'map(select(.kind=="submission"))
 - **IP addresses.** Never, in this log.
 - **Program source.** A learner's work; the shape metrics (`blocks`,
   `commands`, `durationMs`) carry the analysis value without archiving it.
+- **Anything without explicit research consent.** A `submission`,
+  `sessionResponse` or `lesson` row is written only when the request carries
+  `X-HCR-Research-Program-And-Scores: granted` (for a `sessionResponse`, the
+  submission it answers). `matchResults` names no player and is always written.
 
 `playerId` is a random identifier the browser generates and keeps in
 `localStorage`. It is not an account and the server never checks it — treat it as
 "probably the same browser", nothing stronger. Say so in any write-up that uses
 this data.
 
-Rotation is logrotate's job (`deploy/hcr-usage.logrotate`). The server holds the
-file open for the life of the process, so it checks its descriptor against the
-path before every write and reopens when they have parted company — a rotation
-that renames the live file is survived without a restart, and logs one
-`file was rotated, reopened it` line to the journal when it happens.
+Rotation is logrotate's job (`deploy/hcr-usage.logrotate`), and it renames the
+live file. The server holds the file open for the life of the process, so it
+checks its descriptor against the path before every write and reopens when they
+have parted company: the rename is survived without a restart, the next row
+recreates `usage.jsonl` (0640, under the unit's `UMask=0027`), and one
+`file was rotated, reopened it` line goes to the journal. Until that row the file
+is absent, which is normal. Install this logrotate file only with a build that
+has the descriptor check: an older one keeps appending to the renamed
+`usage.jsonl.1` until it is restarted, and nothing rotates in the meantime.
 
-`copytruncate` is still in the shipped config as the cheaper path (no reopen at
-all), but it is no longer load-bearing. A write failure is reported once to the
-journal and then swallowed: losing telemetry must never take the service down.
+A write failure is reported once to the journal and then swallowed: losing
+telemetry must never take the service down.
 
-**If you find `usage.jsonl` at zero bytes** while a numbered archive keeps
-growing, that is the pre-fix failure: an older build is still appending to the
-renamed inode. Check with `sudo ls -l /proc/$(pidof hcr-server)/fd | grep usage`.
+**If you find `usage.jsonl` missing or at zero bytes** while a numbered archive
+keeps growing, that is the pre-fix failure: an older build is still appending to
+the renamed inode. Check with `sudo ls -l /proc/$(pidof hcr-server)/fd | grep usage`.
 The data is in whichever archive the descriptor points at — keep it — and a
 restart is the only way to move a descriptor. A telltale sign is an archive with
 a *newer* mtime than `.1`, which normal rotation can never produce.
@@ -395,10 +454,10 @@ jq -r 'select(.kind=="submission") | [.challengeId, .completionScore] | @tsv' \
 
 - **A restart drops every live round.** All state is in memory; there is no
   database. Rounds are minutes long, so pick a quiet moment.
-- **The sweeper runs every 60 s** and evicts idle sessions, finished rounds
-  (15 min after anyone last looked) and abandoned lobbies (30 min). Without it
-  the process would grow for as long as it ran; it is started by the binary, and
-  logs when it reclaims anything.
+- **The sweeper runs every 60 s** and evicts idle sessions, closed rounds
+  (15 min after the close or the last look, whichever is later) and abandoned
+  lobbies (30 min). Without it the process would grow for as long as it ran; it
+  is started by the binary, and logs when it reclaims anything.
 - **The catalog is fixed at boot** from `hcr::seed`. There is no
   authoring endpoint — adding a challenge means a redeploy.
 - **Rate limiting lives in the reverse proxy**, not in the service: the only

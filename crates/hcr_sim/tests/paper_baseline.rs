@@ -52,9 +52,7 @@ mod tier_a {
     use hcr_sim::{compile_cutter_grid_program_v4, plan_cutter_grid_v4};
     use serde::Deserialize;
 
-    const PROFILE_JSON: &str = include_str!(
-        "../../../../HCR_Simulator_Frontend/tests/fixtures/cutter-grid-profile-v4.json"
-    );
+    const PROFILE_JSON: &str = include_str!("../../hcr/assets/cutter-grid-profile-v4.json");
     const CHALLENGE_JSON: &str = include_str!("fixtures/vectors.json");
 
     #[derive(Debug, Deserialize)]

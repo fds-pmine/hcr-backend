@@ -38,6 +38,25 @@ use crate::session::{SessionRegistry, SessionSpec};
 /// into a file, so every free field it carries needs a ceiling.
 const LESSON_ID_MAX_BYTES: usize = 64;
 
+/// Refuse a client-chosen id unless it is 1..=MAX_ID_BYTES of `[A-Za-z0-9_-]`.
+/// Each becomes a map key, a usage-log field or a roster entry; never echoed (it may be MBs).
+pub(crate) fn check_client_id(field: &str, id: &str) -> ServiceResult<()> {
+    if (1..=hcr_contract::MAX_ID_BYTES).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Ok(());
+    }
+    Err(ServiceError::ProgramInvalid {
+        message: format!(
+            "{field} must be 1 to {} letters, digits, '-' or '_'.",
+            hcr_contract::MAX_ID_BYTES
+        ),
+        field: Some(field.to_string()),
+    })
+}
+
 /// Highest accepted lesson section index. The longest course has twenty.
 const LESSON_SECTION_MAX: u32 = 200;
 
@@ -81,7 +100,8 @@ pub struct ServiceConfig {
     pub seed: u64,
     /// Sessions untouched for longer than this are evicted.
     pub session_idle_timeout_ms: u64,
-    /// How long a finished round stays readable after anyone last looked at it.
+    /// How long a finished round stays readable after its close or anyone's
+    /// last look at it, whichever is later.
     pub match_results_retention_ms: u64,
     /// A lobby nobody starts is dropped after this long untouched.
     pub match_lobby_idle_timeout_ms: u64,
@@ -96,6 +116,8 @@ pub struct ServiceConfig {
     /// program for as long as the process runs — and on a public deployment
     /// anyone can add to it.
     pub max_retained_submissions: usize,
+    /// Cap on live adaptive sessions; a start beyond it gets 429.
+    pub max_live_sessions: usize,
 }
 
 impl Default for ServiceConfig {
@@ -112,8 +134,21 @@ impl Default for ServiceConfig {
             match_results_retention_ms: 15 * 60 * 1000,
             match_lobby_idle_timeout_ms: 30 * 60 * 1000,
             max_retained_submissions: 20_000,
+            max_live_sessions: 10_000,
         }
     }
+}
+
+/// A scored result plus the submitter it is bound to, so its id cannot be
+/// reused under another player, session or challenge.
+#[derive(Debug, Clone)]
+struct StoredSubmission {
+    player_id: Option<String>,
+    session_id: Option<String>,
+    /// The consent the scoring request carried; a session response inherits it,
+    /// because `/sessions/{id}/responses` carries no consent header.
+    research_consent: bool,
+    result: SubmissionResult,
 }
 
 /// The backend, minus any transport.
@@ -129,8 +164,8 @@ pub struct HcrService {
     cutter_grid_planner: Arc<CutterGridPlannerPool>,
     sessions: SessionRegistry,
     signer: ItemRefSigner,
-    /// Submission id -> result. The idempotency record.
-    submissions: Mutex<HashMap<String, SubmissionResult>>,
+    /// Submission id -> result and who it was scored for. The idempotency record.
+    submissions: Mutex<HashMap<String, StoredSubmission>>,
     config: ServiceConfig,
     counter: AtomicU64,
     clock: SharedClock,
@@ -204,11 +239,12 @@ impl HcrService {
     /// below are the whole defence, and they are deliberately tight.
     ///
     /// Returns `recorded: false` when the deployment collects no usage, which is
-    /// the default and not an error.
+    /// the default and not an error, or when `research_consent` is false.
     pub fn record_lesson_event(
         &self,
         request: LessonEventCreate,
         player_id: Option<&str>,
+        research_consent: bool,
     ) -> ServiceResult<LessonEventAck> {
         let id = request.lesson_id.as_str();
         if id.is_empty() || id.len() > LESSON_ID_MAX_BYTES {
@@ -243,7 +279,7 @@ impl HcrService {
             });
         }
 
-        if self.usage.is_none() {
+        if self.usage.is_none() || !research_consent {
             return Ok(LessonEventAck { recorded: false });
         }
         self.record(crate::usage::UsageEvent::from_lesson_event(
@@ -353,28 +389,54 @@ impl HcrService {
     ///
     /// Idempotent on `submission_id`: a repeat returns the stored result rather
     /// than re-scoring. That matters because QoS 1 is at-least-once and HTTP
-    /// clients retry, so the same submission genuinely does arrive twice.
+    /// clients retry, so the same submission genuinely does arrive twice. The
+    /// key is scoped to the submitter (player, session) and challenge; any other
+    /// reuse of the id is `ProgramInvalid`.
+    ///
+    /// For in-process callers, so it records usage as consented; HTTP goes
+    /// through [`Self::create_submission_for`] with the request's answer.
     pub async fn create_submission(
         &self,
         request: SubmissionCreate,
     ) -> ServiceResult<SubmissionResult> {
-        self.create_submission_for(request, None).await
+        self.create_submission_for(request, None, true).await
     }
 
     /// Score a program, recording who submitted it.
     ///
     /// Separate from [`Self::create_submission`] rather than an added parameter
     /// so the many callers that have no identity to offer stay unchanged. The
-    /// player is used **only** for the usage log — it grants nothing and is
-    /// never checked, because on a public deployment it is whatever the client
-    /// claimed.
+    /// player goes to the usage log and scopes the idempotency key; it is still
+    /// not authenticated, because on a public deployment it is whatever the
+    /// client claimed. Without `research_consent` no usage row is written, now
+    /// or for a session response that later names this submission.
     pub async fn create_submission_for(
         &self,
         request: SubmissionCreate,
         player_id: Option<&str>,
+        research_consent: bool,
     ) -> ServiceResult<SubmissionResult> {
+        check_client_id("submissionId", &request.submission_id)?;
+        if let Some(id) = &request.session_id {
+            check_client_id("sessionId", id)?;
+        }
+        if let Some(id) = &request.match_id {
+            check_client_id("matchId", id)?;
+        }
         if let Some(existing) = self.stored_submission(&request.submission_id) {
-            return Ok(existing);
+            // shortcut: the owner is client-claimed (X-HCR-Player is spoofable, F28); this stops reuse under another identity, not impersonation; upgrade when players authenticate.
+            // shortcut: check-then-store is not atomic (Q8): concurrent same-id requests both replay and log, and the last store owns the id; add an in-flight map if a client starts retrying before the first reply.
+            if existing.player_id.as_deref() != player_id
+                || existing.session_id != request.session_id
+                || existing.result.challenge_id != request.challenge_id
+                || existing.result.challenge_version != request.challenge_version
+            {
+                return Err(ServiceError::ProgramInvalid {
+                    message: "This submissionId was already used for a different submission; send a new id.".into(),
+                    field: None,
+                });
+            }
+            return Ok(existing.result);
         }
 
         let dto = self
@@ -412,7 +474,7 @@ impl HcrService {
             let planned = self.cutter_grid_planner.plan(&dto, program).await?;
             let outcome = hcr_sim::replay_planned_v4(
                 &dto.challenge,
-                program.source_block_count,
+                program.scored_block_count(),
                 &planned.response.plan,
             )?;
             (
@@ -472,33 +534,47 @@ impl HcrService {
             error: None,
         };
 
-        self.store_submission(&result);
+        self.store_submission(
+            &result,
+            player_id.map(str::to_owned),
+            session_id.clone(),
+            research_consent,
+        );
         // `dto` is the version that was actually replayed against, so its
         // scoring block is the one that produced these scores — not whatever
         // the catalog holds for this challenge by the time anyone reads the log.
-        self.record(crate::usage::UsageEvent::from_submission(
-            self.now(),
-            player_id.map(str::to_owned),
-            &result,
-            match_id,
-            session_id,
-            mode,
-            &dto.challenge.scoring,
-        ));
+        if research_consent {
+            self.record(crate::usage::UsageEvent::from_submission(
+                self.now(),
+                player_id.map(str::to_owned),
+                &result,
+                match_id,
+                session_id,
+                mode,
+                &dto.challenge.scoring,
+            ));
+        }
         Ok(result)
     }
 
     /// Fetch a previously scored submission.
     pub fn get_submission(&self, submission_id: &str) -> ServiceResult<SubmissionResult> {
         self.stored_submission(submission_id)
+            .map(|stored| stored.result)
             .ok_or(ServiceError::Internal("no such submission"))
     }
 
-    fn stored_submission(&self, submission_id: &str) -> Option<SubmissionResult> {
+    fn stored_submission(&self, submission_id: &str) -> Option<StoredSubmission> {
         self.submissions.lock().ok()?.get(submission_id).cloned()
     }
 
-    fn store_submission(&self, result: &SubmissionResult) {
+    fn store_submission(
+        &self,
+        result: &SubmissionResult,
+        player_id: Option<String>,
+        session_id: Option<String>,
+        research_consent: bool,
+    ) {
         if let Ok(mut store) = self.submissions.lock() {
             // Crude, like the replay cache's, and for the same reason: a full
             // clear bounds memory without pulling in an LRU. What is lost is
@@ -509,9 +585,18 @@ impl HcrService {
             // rather than a wrong score. Both are acceptable; unbounded growth
             // is not.
             if store.len() >= self.config.max_retained_submissions {
+                // shortcut: ~20k distinct ids flush every stored result, so an in-flight session respond gets ITEM_REF_INVALID; switch to FIFO eviction if that is ever seen in class.
                 store.clear();
             }
-            store.insert(result.submission_id.clone(), result.clone());
+            store.insert(
+                result.submission_id.clone(),
+                StoredSubmission {
+                    player_id,
+                    session_id,
+                    research_consent,
+                    result: result.clone(),
+                },
+            );
         }
     }
 
@@ -524,6 +609,11 @@ impl HcrService {
 
     /// Open an adaptive session.
     pub async fn start_session(&self, request: SessionStart) -> ServiceResult<SessionSnapshot> {
+        // shortcut: one global cap; a flooder that keeps polling its own sessions (GET refreshes last_seen) locks out new starts indefinitely instead of OOM-killing the process, and check-then-insert can overshoot by in-flight requests. Per-client limits are nginx's (F21); move to per-player caps if authentication lands.
+        if self.sessions.len().await >= self.config.max_live_sessions {
+            return Err(ServiceError::RateLimited);
+        }
+
         // Only items playable in this mode, so adaptive selection chooses from
         // what it can actually serve — and "playable" includes this process
         // holding a Profile to plan the route with, not merely the catalog
@@ -540,10 +630,8 @@ impl HcrService {
         }
 
         let ordinal = self.counter.fetch_add(1, Ordering::Relaxed);
-        let session_id = format!(
-            "s-{:016x}",
-            self.config.seed ^ (ordinal.wrapping_mul(0x9E37_79B9_7F4A_7C15))
-        );
+        // Random, not counter-derived: the id is the only capability on a session (F6), and a restart must not reissue old ids (F14).
+        let session_id = format!("s-{:016x}", rand::random::<u64>());
         let seed = self.config.seed.wrapping_add(ordinal);
 
         let outcomes = OutcomeStore::new();
@@ -641,11 +729,17 @@ impl HcrService {
             return Err(ServiceError::ItemRefInvalid("issued to another session"));
         }
 
-        let submission =
+        let stored =
             self.stored_submission(&request.submission_id)
                 .ok_or(ServiceError::ItemRefInvalid(
                     "the referenced submission has not been scored",
                 ))?;
+        if stored.session_id.as_deref() != Some(request.session_id.as_str()) {
+            return Err(ServiceError::ItemRefInvalid(
+                "the submission was scored for another session",
+            ));
+        }
+        let submission = stored.result;
 
         // Guard against answering item A with a program written for item B.
         if submission.challenge_id != claims.item_id
@@ -673,18 +767,20 @@ impl HcrService {
 
         // The ability trajectory: one row per response, so a session can be
         // replayed offline to check the estimator against its own history.
-        self.record(crate::usage::UsageEvent::SessionResponse {
-            ts: self.now(),
-            session_id: request.session_id.clone(),
-            challenge_id,
-            // The session refused any other mode above, so this is the
-            // session's mode as much as the submission's.
-            mode: submission.programming_mode,
-            raw_score: outcome.raw_score,
-            correct: outcome.correct,
-            theta: outcome.theta,
-            standard_error: outcome.standard_error,
-        });
+        if stored.research_consent {
+            self.record(crate::usage::UsageEvent::SessionResponse {
+                ts: self.now(),
+                session_id: request.session_id.clone(),
+                challenge_id,
+                // The session refused any other mode above, so this is the
+                // session's mode as much as the submission's.
+                mode: submission.programming_mode,
+                raw_score: outcome.raw_score,
+                correct: outcome.correct,
+                theta: outcome.theta,
+                standard_error: outcome.standard_error,
+            });
+        }
         Ok(outcome)
     }
 
@@ -902,6 +998,9 @@ impl HcrService {
         match_id: &str,
         crews: &std::collections::HashMap<String, String>,
     ) -> ServiceResult<MatchState> {
+        for crew in crews.values() {
+            check_client_id("crews", crew)?;
+        }
         self.matches.set_crews(match_id, crews)
     }
 
@@ -941,8 +1040,11 @@ impl HcrService {
         match_id: &str,
         player_id: &str,
         request: SubmissionCreate,
+        research_consent: bool,
     ) -> ServiceResult<MatchSubmissionAck> {
-        let result = self.create_submission_for(request, Some(player_id)).await?;
+        let result = self
+            .create_submission_for(request, Some(player_id), research_consent)
+            .await?;
         self.matches.submit(match_id, player_id, &result)
     }
 

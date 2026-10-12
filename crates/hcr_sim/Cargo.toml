@@ -12,7 +12,7 @@ rust-version.workspace = true
 hcr_contract = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
-# The compact V4 planner signs only its own deterministic serialized plan.
+# The compact V4 planner checksums (unkeyed FNV-1a) only its own deterministic serialized plan.
 # It stays optional so firmware/no_std replay builds do not link planner code.
 serde_json = { workspace = true, optional = true }
 # Used in std builds too, so server and firmware share one trig implementation.

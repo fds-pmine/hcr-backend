@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 hmac = "0.12"
 sha2 = { workspace = true, features = ["std"] }
 base64 = { version = "0.22", features = ["std"] }
+rand = "0.8"  # already built for hcr_qbank; same major, no duplicate
 
 # Optional: the hotaru HTTP adapter. Off by default so the service core stays
 # independent of the framework — and of churn in it.

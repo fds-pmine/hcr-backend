@@ -44,8 +44,12 @@ pub fn remap_for_arona(raw_score: f64, tau: f64) -> f64 {
     };
 
     // arona's `Score::new` asserts its input is in [0,1] and panics otherwise,
-    // so clamp rather than trust the arithmetic.
-    mapped.clamp(0.0, 1.0)
+    // so clamp rather than trust the arithmetic. `clamp` passes NaN through.
+    if mapped.is_nan() {
+        0.0
+    } else {
+        mapped.clamp(0.0, 1.0)
+    }
 }
 
 /// Inverse of [`remap_for_arona`], for reporting a stored arona score back in raw
@@ -119,7 +123,7 @@ mod tests {
     fn output_is_always_a_legal_arona_score() {
         // `Score::new` panics outside [0,1], so nothing may escape the range —
         // including from absurd inputs.
-        for raw in [-5.0, -0.0, 0.5, 1.0, 7.0, f64::INFINITY] {
+        for raw in [-5.0, -0.0, 0.5, 1.0, 7.0, f64::INFINITY, f64::NAN] {
             let mapped = remap_for_arona(raw, 0.5);
             assert!((0.0..=1.0).contains(&mapped), "raw={raw} produced {mapped}");
         }

@@ -6,25 +6,26 @@
 # `ts`, so bucketing by day is a property of the data rather than of the
 # filename, and logrotate is already on the box and better at this.
 #
-# `copytruncate` because hcr-server holds the file open for the life of the
-# process. Without it, rotation renames the file and a naive writer keeps
-# appending to the renamed inode — the classic silent-loss failure, whose only
-# symptom is a zero-byte log nobody notices for a month.
+# Rotation renames the live file and creates nothing in its place. hcr-server
+# compares its descriptor against the path before every write, and when rotation
+# has moved the file it reopens the path, creating the file 0640 under the
+# unit's `UMask=0027`. `follows_the_path_when_rotation_renames_the_file` in
+# crates/hcr/src/usage.rs pins that. A build older than that check keeps
+# appending to the renamed file, so install this only alongside a current build.
 #
-# The server no longer depends on this: it compares its descriptor against the
-# path before every write and reopens if rotation moved the file underneath it.
-# `copytruncate` is kept because it is the cheaper path — the inode survives, so
-# there is nothing to reopen — but the correctness of the log no longer rests on
-# a config file the program cannot see. If you replace this file with your own,
-# the log still works.
+# Not `copytruncate`: it keeps the original inode, so the file never gets a
+# tighter mode, and rows written between the copy and the truncate are lost.
+# `nocreate` overrides a global `create` in /etc/logrotate.conf, which would race
+# the server's own reopen. `su hcr hcr` rotates as the service user, so root never
+# renames or compresses files in a directory that hcr can write to.
 
 /var/lib/hcr/usage.jsonl {
+	su hcr hcr
 	daily
 	rotate 90
 	compress
 	delaycompress
 	missingok
 	notifempty
-	copytruncate
-	create 0640 hcr hcr
+	nocreate
 }
