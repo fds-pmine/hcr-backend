@@ -4,3 +4,4 @@ target/
 .env*
 !*.env.example
 docs/*
+Cargo.lock
